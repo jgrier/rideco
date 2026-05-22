@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cancel a trip. Trip.cancel is a terminal state transition; like complete,
-# it fires Bifrost send → SafetyAgent.stop_monitoring.
+# it fires durable async send → SafetyAgent.stop_monitoring.
 # Usage: ./scripts/cancel-trip.sh <trip_id>
 
 set -euo pipefail
@@ -18,6 +18,6 @@ echo
 curl -s -X POST "$INGRESS/Trip/$TRIP_ID/cancel" -H 'Content-Type: application/json' -d '{}' \
   | python3 -m json.tool
 echo
-echo " ✓ Trip cancelled. SafetyAgent.stop_monitoring fired (Bifrost)."
+echo " ✓ Trip cancelled. SafetyAgent.stop_monitoring fired (Restate log)."
 echo
 echo " Restate UI: http://localhost:9070 → State → Trip → $TRIP_ID"

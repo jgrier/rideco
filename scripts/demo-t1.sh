@@ -24,7 +24,7 @@ echo
 echo " This terminal will host hypercorn — the Python process serving"
 echo " all 8 Restate services. Its log scrolls below as the demo runs;"
 echo " every cross-service hop is tagged [sync→] / [send→] / [self→]"
-echo " so the audience can see sync RPC vs Bifrost send vs cadence"
+echo " so the audience can see sync RPC vs durable async send vs cadence"
 echo " self-send at a glance."
 echo
 echo " Restate UI for visual confirmation:  http://localhost:9070"

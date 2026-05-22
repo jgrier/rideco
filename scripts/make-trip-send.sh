@@ -27,7 +27,7 @@ echo " MAKE TRIP (fire-and-forget) — $TRIP_ID in $REGION"
 echo "════════════════════════════════════════════════════════════════"
 echo
 echo " Trip.request_ride/send (fire-and-forget — rider doesn't wait)"
-echo " The invocation is accepted into Bifrost. If ETA is currently"
+echo " The invocation is accepted into the Restate log. If ETA is currently"
 echo " stuck on a poison-pill, that's fine — Restate will keep retrying"
 echo " in the background without holding the rider's connection open."
 echo

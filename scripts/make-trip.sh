@@ -35,7 +35,7 @@ curl -s -X POST "$INGRESS/Trip/$TRIP_ID/request_ride" \
   | python3 -m json.tool
 
 echo
-echo " (2/2) Trip.confirm (Bifrost send — fire-and-forget)"
+echo " (2/2) Trip.confirm (durable async send via the Restate log — fire-and-forget)"
 echo "       Trip enqueues into Dispatch[$REGION] for the next matching round."
 echo
 curl -s -X POST "$INGRESS/Trip/$TRIP_ID/confirm" -H 'Content-Type: application/json' -d '{}'

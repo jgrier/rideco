@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mark a trip as completed. Trip.complete is the terminal state transition;
-# it fires a Bifrost send to SafetyAgent.stop_monitoring so the per-trip
+# it fires a durable async send to SafetyAgent.stop_monitoring so the per-trip
 # agent stops ticking.
 # Usage: ./scripts/complete-trip.sh <trip_id>
 
@@ -17,7 +17,7 @@ echo " COMPLETE TRIP — $TRIP_ID"
 echo "════════════════════════════════════════════════════════════════"
 echo
 echo " Trip.complete — terminal state transition for the trip."
-echo " Fires Bifrost send → SafetyAgent.stop_monitoring, which marks"
+echo " Fires durable async send → SafetyAgent.stop_monitoring, which marks"
 echo " the per-trip agent inactive. The agent's next tick will see"
 echo " active=false and return without scheduling another tick."
 echo

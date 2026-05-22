@@ -12,7 +12,7 @@ the Virtual Object KEY (e.g. `region:SF:weather`), and the JSON VALUE
 becomes the `set` handler's payload.
 
 Everything else in RideCo (driver pings, trip lifecycle, dispatch
-internals, pricing refresh, safety ticks) is Bifrost — see the README's
+internals, pricing refresh, safety ticks) is Restate log — see the README's
 "Sync vs async" table.
 
 Also kicks off Pricing.refresh per region on startup via direct HTTP —

@@ -17,7 +17,7 @@ services:
   kafka:
     # Single broker in KRaft mode. Used for exactly one topic, `mapping_events`,
     # so the demo can show Restate's Kafka subscription integration at the
-    # external-feed edge. Every other async hop in RideCo runs on Bifrost.
+    # external-feed edge. Every other async hop in RideCo runs on the Restate log.
     image: apache/kafka:3.8.0
     container_name: rideco_kafka
     ports:

@@ -58,7 +58,7 @@
 
   <!-- Title -->
   <text x="600" y="32" text-anchor="middle" fill="#f1f5f9" font-size="22" font-weight="600">RideCo on Restate</text>
-  <text x="600" y="55" text-anchor="middle" fill="#94a3b8" font-size="14">Eight services across the four domains Restate covers — one Kafka edge, Bifrost everywhere else</text>
+  <text x="600" y="55" text-anchor="middle" fill="#94a3b8" font-size="14">Eight services across the four domains Restate covers — one Kafka edge, Restate log everywhere else</text>
 
   <!-- External actors -->
   <rect x="60"  y="85" width="140" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
@@ -87,7 +87,7 @@
   <!-- Restate cluster outline -->
   <rect x="35" y="245" width="1130" height="615" rx="16" fill="#0b1220" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.95"/>
   <text x="55" y="270" fill="#e2e8f0" font-size="14" font-weight="600">Restate cluster</text>
-  <text x="155" y="270" fill="#94a3b8" font-size="13">— control + data + Bifrost log in a single binary</text>
+  <text x="155" y="270" fill="#94a3b8" font-size="13">— control + data + Restate log in a single binary</text>
 
   <!-- ====== Stateful microservices band ====== -->
   <rect x="55" y="290" width="1090" height="130" rx="10" fill="#1e3a8a" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.35" stroke-width="1"/>
@@ -181,19 +181,19 @@
   <!-- Internal sync: Offers -> Pricing (curve over ETA) -->
   <path d="M 395 358 Q 487 305 580 358" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
 
-  <!-- Bifrost: Trip -> Dispatch (yellow thick) -->
+  <!-- Restate log: Trip -> Dispatch (yellow thick) -->
   <path d="M 157 403 Q 157 500 240 628" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
   <text x="100" y="495" fill="#fcd34d" font-size="11" font-weight="600">enqueue_trip</text>
 
-  <!-- Bifrost: Dispatch -> Trip (yellow thick, return) -->
+  <!-- Restate log: Dispatch -> Trip (yellow thick, return) -->
   <path d="M 350 628 Q 270 500 180 403" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
   <text x="265" y="510" fill="#fcd34d" font-size="11" font-weight="600">assign_driver</text>
 
-  <!-- Bifrost: Locations -> Dispatch -->
+  <!-- Restate log: Locations -> Dispatch -->
   <path d="M 220 553 Q 240 590 260 628" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
   <text x="225" y="585" fill="#fcd34d" font-size="11" font-weight="600">register_driver</text>
 
-  <!-- Bifrost: Trip -> SafetyAgent (yellow thick, long) -->
+  <!-- Restate log: Trip -> SafetyAgent (yellow thick, long) -->
   <path d="M 230 380 Q 500 380 745 645" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
   <text x="490" y="375" fill="#fcd34d" font-size="11" font-weight="600">start_monitoring</text>
 
@@ -211,7 +211,7 @@
     <text x="75" y="19" fill="#e2e8f0" font-size="12">sync RPC — caller awaits</text>
 
     <line x1="280" y1="15" x2="340" y2="15" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-    <text x="355" y="19" fill="#e2e8f0" font-size="12">Bifrost durable send — one-way, journaled</text>
+    <text x="355" y="19" fill="#e2e8f0" font-size="12">durable send via the Restate log — one-way, journaled</text>
 
     <line x1="700" y1="15" x2="760" y2="15" stroke="#f87171" stroke-width="2.5" stroke-dasharray="7,4" marker-end="url(#arrowRed)"/>
     <text x="775" y="19" fill="#e2e8f0" font-size="12">Kafka subscription — external feed only</text>

@@ -57,6 +57,18 @@ cat <<EOF
  Every step pauses for ENTER. Flip to Terminal 1 or
  http://localhost:9070 (Restate Web UI) between steps if you want
  to poke around.
+
+ Across the demo you'll see five communication patterns. Each phase
+ calls out which ones it exercises:
+
+   ▸ Sync HTTP from external apps   rider / driver / operator
+   ▸ Kafka subscription             external feed → Features.set (1 place only)
+   ▸ Sync RPC between services      [sync→] tag in T1
+   ▸ Durable async send             [send→] tag in T1 — the Restate log
+                                    replaces what Kafka was doing as
+                                    internal RPC bus
+   ▸ Long-running workflows         Dispatch's batched matching round,
+                                    SafetyAgent suspended on an Awakeable
 EOF
 pause
 
@@ -73,11 +85,21 @@ pause
 # ───── PHASE 1 ───────────────────────────────────────────────────────
 section "PHASE 1 — one quiet trip, top to bottom"
 echo
+echo " Channels in this phase:"
+echo "   ▸ Kafka subscription       mapping_events → Features.set"
+echo "   ▸ Sync HTTP from driver    set_status, ping (Locations VO)"
+echo "   ▸ Sync HTTP from rider     request_ride, confirm (Trip VO)"
+echo "   ▸ Sync RPC between svcs    Trip → Offers → ETA + Pricing"
+echo "   ▸ Durable async send       Trip → Pricing/Dispatch/Locations/SafetyAgent"
+echo "                              Dispatch → Trip.assign_driver"
+echo "                              Locations → Dispatch.register_driver"
+echo "   ▸ Self-send cadence        Dispatch close_epoch (5s), SafetyAgent tick (8s)"
+echo
 echo " Going to (a) seed SF with baseline features via Kafka, (b) put"
 echo " one driver online, (c) fire one rider request + confirm, (d) wait"
 echo " for the 5s dispatch round to match, (e) read final state."
 echo
-echo " Watch Terminal 1: the full sync chain + Bifrost sends + self-sends"
+echo " Watch Terminal 1: the full sync chain + durable async sends + self-sends"
 echo " will scroll. Watch Restate UI → Invocations: live invocation graph."
 pause
 
@@ -101,6 +123,13 @@ pause
 
 # ───── PHASE 2 ───────────────────────────────────────────────────────
 section "PHASE 2 — poison-pill in LA, SF stays healthy"
+echo
+echo " Channels in this phase:"
+echo "   ▸ Kafka subscription       publish weather=BAD for LA"
+echo "   ▸ Automatic retry on the   the stuck invocations sit in Restate's"
+echo "     Restate log              durable input queue and retry forever"
+echo "   ▸ Per-key failure          LA jams, SF unaffected by the same code path"
+echo "     isolation"
 echo
 echo " Inject weather=BAD into LA. ETA can't parse 'BAD' → ValueError →"
 echo " Restate retries forever with exponential backoff (per-key)."
@@ -136,6 +165,11 @@ pause
 # ───── PHASE 3 ───────────────────────────────────────────────────────
 section "PHASE 3 — fix the code, watch the drain"
 echo
+echo " Channels in this phase:"
+echo "   ▸ Hot redeploy             re-register the same URL with new code"
+echo "   ▸ Retry against new code   the stuck invocation hits the fix on its"
+echo "                              next backoff tick — no manual queue drain"
+echo
 echo " Now you fix the bug. Three things in order:"
 echo
 echo "   1. In your editor: open  rideco/services/eta.py"
@@ -170,6 +204,14 @@ pause
 
 # ───── PHASE 4 ───────────────────────────────────────────────────────
 section "PHASE 4 — human-in-the-loop (AI agent escalation)"
+echo
+echo " Channels in this phase:"
+echo "   ▸ Kafka subscription       publish accident_density=0.8 for SF"
+echo "   ▸ ctx.run                  mocked LLM risk score, journaled for replay"
+echo "   ▸ Awakeable suspend        agent pauses cleanly; no Python process held"
+echo "   ▸ Sync HTTP awakeable      operator POSTs verdict; same invocation"
+echo "     resolve                  resumes from exactly where it suspended"
+echo "   ▸ Long-running workflow    the agent itself, running across the trip"
 echo
 echo " t-1's SafetyAgent has been ticking quietly every 8s at risk≈0.2."
 echo " We're going to bump SF's accident_density to 0.8 via Kafka. On its"
@@ -208,8 +250,12 @@ pause
 # ───── PHASE 5 ───────────────────────────────────────────────────────
 section "PHASE 5 — complete the trip"
 echo
+echo " Channels in this phase:"
+echo "   ▸ Sync HTTP from app       Trip.complete"
+echo "   ▸ Durable async send       Trip → SafetyAgent.stop_monitoring"
+echo
 echo " The ride ends. Trip.complete is a terminal state transition that"
-echo " also fires Bifrost send to SafetyAgent.stop_monitoring."
+echo " also fires a durable async send to SafetyAgent.stop_monitoring."
 pause
 
 run ./scripts/complete-trip.sh t-1
@@ -226,28 +272,61 @@ pause
 section "DONE — what we just saw"
 cat <<EOF
 
- Four primitives, demonstrated end-to-end:
+ Communication patterns exercised across the five phases:
+
+   ✓ Sync HTTP from external apps
+       rider request_ride/confirm/cancel, driver ping/set_status,
+       app complete, human operator awakeable resolve
+
+   ✓ Kafka subscription
+       mapping_events topic → Restate routes by key → Features.set
+       (the only Kafka in the demo — external multi-consumer feed)
+
+   ✓ Sync RPC between services
+       Trip → Offers → ETA + Pricing
+       Dispatch → Locations.get_position
+       SafetyAgent → Locations + Features
+
+   ✓ Durable async send via the Restate log
+       Trip → Pricing.note_demand / Dispatch.enqueue_trip / Locations.accept_trip
+       Trip → SafetyAgent.start_monitoring / stop_monitoring
+       Dispatch → Trip.assign_driver
+       Locations → Dispatch.register_driver / deregister_driver
+       (every place a Kafka topic would have been the internal RPC bus)
+
+   ✓ Self-scheduled cadence
+       Dispatch close_epoch every 5s
+       Pricing refresh every 10s
+       SafetyAgent tick every 8s
+       (the Restate log is the scheduler)
+
+   ✓ Long-running workflows
+       Dispatch's batched matching round — multi-epoch carry-forward of
+       unmatched trips, runs as long as there's pending work
+       SafetyAgent — per-trip agent for the lifetime of the ride,
+       suspended cleanly on an Awakeable when escalating to a human
+
+ Four Restate primitives doing the work:
 
    • Virtual Objects as per-key durable state
-       Trip, Locations, Pricing, Features, SafetyAgent — all single-writer,
-       all durable, all live in the same runtime.
+       Trip, Locations, Pricing, Features, SafetyAgent — single-writer,
+       durable, live in the same runtime.
 
-   • Function-shaped composition with Bifrost durability under the hood
-       [sync→] looks like RPC, [send→] looks like fire-and-forget, but
-       both are journaled, retryable, and observable.
+   • Function-shaped composition with Restate-log durability
+       [sync→] looks like RPC, [send→] looks like fire-and-forget — both
+       are journaled, retryable, observable.
 
-   • Self-scheduled cadence
-       Dispatch's 5s epoch, Pricing's 10s refresh, SafetyAgent's 8s tick.
-       No cron, no Airflow, no separate scheduler.
+   • ctx.run for non-deterministic side effects
+       Mocked LLM call inside SafetyAgent. Replays deterministically
+       because the result is journaled.
 
    • Awakeables for human-in-the-loop
-       Agent suspended for the human's verdict — no process held in
-       memory, deterministic replay.
+       Same invocation suspends and resumes; no Python process held.
 
- One Kafka topic at the trust-boundary edge. Everything else on Bifrost.
+ One Kafka topic at the trust-boundary edge. Everything else on the Restate log.
 
  Reset for another run:
    T1:  Ctrl+C, then ./scripts/demo-t1.sh fresh
    T2:  ./scripts/demo-t2.sh
-   Also: flip HANDLE_BAD_WEATHER_GRACEFULLY back to False
+   Also: flip HANDLE_BAD_WEATHER_GRACEFULLY back to False in rideco/services/eta.py
 EOF
