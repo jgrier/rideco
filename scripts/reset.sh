@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Full state wipe: stop hypercorn, restart Restate + Kafka (loses state),
-# wait for them, register the deployment + Kafka subscription.
+# Full state wipe: stop hypercorn, restart Restate (loses all state),
+# wait for it, register the deployment.
 # After this, you still need to `make serve` (in Terminal 1) before `register`.
 
 set -euo pipefail
@@ -11,7 +11,7 @@ echo "→ stopping hypercorn (if running)"
 "$SCRIPT_DIR/stop.sh"
 
 echo
-echo "→ docker compose down (wipes all Restate + Kafka state)"
+echo "→ docker compose down (wipes all Restate state)"
 (cd "$REPO_DIR" && docker compose down)
 
 echo
@@ -26,4 +26,4 @@ echo "  ready"
 echo
 echo "✓ clean state. Now:"
 echo "  Terminal 1:  make serve"
-echo "  Terminal 2:  scripts/register.sh"
+echo "  Terminal 2:  ./scripts/register.sh"

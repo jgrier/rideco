@@ -1,15 +1,15 @@
 """Color-coded structured logging for stage demos.
 
 The `flow` keyword arg prepends a flow tag so the audience can see, live,
-which interactions are synchronous RPC vs Restate log async send vs Kafka
-ingest vs delayed self-send. Used at the *call site* of every inter-service
-interaction — the sender annotates the flow, the receiver just logs what
-it did.
+which interactions are synchronous RPC vs durable async send (Restate log)
+vs delayed self-send for cadence. Used at the *call site* of every
+inter-service interaction — the sender annotates the flow, the receiver
+just logs what it did.
 
   flow="sync"   →  [sync→]    sync RPC (caller awaits)
-  flow="send"   →  [send→]    one-way durable async send (durable async)
-  flow="self"   →  [self→]    delayed self-send (cadence loop)
-  flow="kafka"  →  [kafka→]   publish to a Kafka topic (external boundary)
+  flow="send"   →  [send→]    durable async send via the Restate log (one-way)
+  flow="self"   →  [self→]    delayed self-send (cadence loop — still the
+                              Restate log, just to self with a delay)
   flow=None     →  no tag     receiver-side activity log
 """
 
@@ -32,10 +32,9 @@ _SERVICE_COLORS = {
 }
 
 _FLOW_TAGS = {
-    "sync":  "[bold green][sync→][/bold green]   ",
-    "send":  "[bold blue][send→][/bold blue]   ",
-    "self":  "[bold blue][self→][/bold blue]   ",
-    "kafka": "[bold red][kafka→][/bold red]  ",
+    "sync": "[bold green][sync→][/bold green]   ",
+    "send": "[bold blue][send→][/bold blue]   ",
+    "self": "[bold blue][self→][/bold blue]   ",
 }
 
 

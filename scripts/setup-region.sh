@@ -27,10 +27,10 @@ echo "════════════════════════�
 echo " SETUP REGION — $REGION"
 echo "════════════════════════════════════════════════════════════════"
 echo
-echo " (1/3) Publishing baseline weather=clear via Kafka"
+echo " (1/3) Publishing baseline weather=clear via HTTP send (Restate log)"
 "$SCRIPT_DIR/set-feature.sh" "$REGION" weather clear
 echo
-echo " (2/3) Publishing baseline accident_density=0.05 via Kafka"
+echo " (2/3) Publishing baseline accident_density=0.05 via HTTP send (Restate log)"
 "$SCRIPT_DIR/set-feature.sh" "$REGION" accident_density 0.05
 echo
 echo " (3/3) Driver $DRIVER_ID going online in $REGION (sync HTTP)"

@@ -11,14 +11,13 @@ This is not a migration pitch.
 
 ## The punchline
 
-> **Every service/handler in Restate automatically has a durable log in front of it.** Any invocation — sync RPC, async send, Kafka subscription, scheduled timer, webhook — is journaled in Restate's log *before* it executes. Durability, retry, ordering, observability — all the things Kafka was giving you for internal-bus use cases — are now a property of every handler, transparently.
+> **Every service/handler in Restate automatically has a durable log in front of it.** Any invocation — sync RPC, async send, scheduled timer, webhook — is journaled in Restate's log *before* it executes. Durability, retry, ordering, observability — all the things Kafka was giving you for internal-bus use cases — are now a property of every handler, transparently.
 
-You don't need Kafka for what Kafka was being used for most of the time. You
-need it where it actually earns its keep: a durable log at trust boundaries,
-with multiple independent push consumers, with retention measured in days.
-For everything else — internal courier work between two services that already
-know each other — Restate's `ctx.send()` writes to the Restate log and you get the
-same durability without operating the Kafka cluster.
+You don't need Kafka for what Kafka was being used for most of the time.
+External publishers, internal courier work between services, scheduled
+cadence — all the same primitive: `ctx.send()` (or an HTTP POST to
+Restate's ingress) writes to the Restate log, durable from
+acknowledgement, no Kafka cluster to operate.
 
 ## The four domains this demonstrates
 
@@ -38,16 +37,14 @@ RideCo's eight services are deliberately spread across all four.
 
 ![Architecture](architecture.svg)
 
-**Arrow legend.** Three line styles cover every async/sync flavor in the demo:
+**Arrow legend.** Two line styles cover every interaction:
 
-- `→` thin solid = **synchronous RPC** (`[sync→]` in logs) — caller awaits the response.
-- `⇒` thick solid = **durable async send via the Restate log** (`[send→]` in logs) — fire-and-forget, journaled, retryable.
-- `⇢` dashed = **Kafka subscription** (`[kafka→]` in the publisher's logs) — used in exactly one place, the external mapping-events edge.
+- `→` thin solid = **synchronous request** (`[sync→]` in logs) — caller awaits the response. Both external HTTP and internal RPC.
+- `⇒` thick solid = **durable async send** (`[send→]` in logs) — fire-and-forget into the Restate log. Both external publishers (mapping providers, driver pings) and internal one-way hops between services.
 
 **Not shown on the diagram, but in the system:**
 
-- **Self-sends for cadence loops** (`[self→]` in logs): Dispatch's `close_epoch` every 5s, Pricing's `refresh` every 10s, SafetyAgent's `tick` every 8s. Each VO schedules its own next invocation via `ctx.object_send(handler, key=self.key(), send_delay=...)`. No external scheduler.
-- **Driver pings to Locations.ping**: same `[send→]`-shaped HTTP path as `set_status` but high-frequency. Could move to Kafka if multi-consumer ever emerges, but in our 8 services only Locations is the direct consumer — so it stays on the same path the rider app uses, just at higher rate.
+- **Self-sends for cadence loops** (`[self→]` in logs): Dispatch's `close_epoch` every 5s, Pricing's `refresh` every 10s, SafetyAgent's `tick` every 8s. Each VO schedules its own next invocation via `ctx.object_send(handler, key=self.key(), send_delay=...)`. Same primitive as the durable async send arrow, just to self with a delay — no external scheduler.
 
 **A trip from rider tap to dispatched ride, in order:**
 
@@ -73,7 +70,7 @@ RideCo's eight services are deliberately spread across all four.
 | Domain                    | Service          | Restate primitive                                       | Role                                                                                                |
 |---------------------------|------------------|---------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
 | Event-driven applications | **Locations**    | `VirtualObject` keyed by `driver_id`                    | GPS ingestion + map-matched position + driver status                                                |
-| Event-driven applications | **Features**     | `VirtualObject` keyed by `entity:id:feature`            | Online feature store. Receives one Kafka topic externally.                                          |
+| Event-driven applications | **Features**     | `VirtualObject` keyed by `entity:id:feature`            | Online feature store. External feeds publish directly via HTTP send.                                |
 | Stateful microservices    | **Trip**         | `VirtualObject` keyed by `trip_id`                      | Lifecycle state machine; entry point for ride requests                                              |
 | Stateful microservices    | **Offers**       | stateless `Service`                                     | Fan-in over ETA + Pricing to produce ranked offer candidates per car class                          |
 | Stateful microservices    | **Pricing**      | `VirtualObject` keyed by `region`                       | Surge multiplier; periodic refresh via delayed self-send                                            |
@@ -84,13 +81,13 @@ RideCo's eight services are deliberately spread across all four.
 ## Per-service breakdown
 
 How each service uses Restate, how it receives requests, what state it owns,
-and who it talks to. Five communication patterns recur:
+and who it talks to. Three communication patterns recur, plus one special
+primitive:
 
-- **Sync HTTP from external** — rider/driver/operator apps; Restate's ingress on `:8080`
-- **Kafka subscription** — Restate consumes from a topic and invokes a handler; used in exactly one place
-- **Sync RPC between services** — `ctx.service_call` / `ctx.object_call` (the `[sync→]` tag in logs)
-- **Durable async send between services** — `ctx.service_send` / `ctx.object_send` via the Restate log (the `[send→]` tag)
-- **Self-scheduled cadence** — same as durable async send but to self with `send_delay`; replaces an external scheduler (the `[self→]` tag)
+- **Sync request** (`[sync→]` tag in logs) — caller awaits a response. Covers both external HTTP from rider/driver/operator apps and internal RPC between services (`ctx.service_call` / `ctx.object_call`).
+- **Durable async send** (`[send→]` tag) — fire-and-forget into the Restate log. Covers both external publishers (mapping providers, driver pings via HTTP `/send`) and internal one-way hops (`ctx.service_send` / `ctx.object_send`). Durable from acknowledgement.
+- **Self-scheduled cadence** (`[self→]` tag) — same primitive as durable async send, just to self with a `send_delay`. Replaces external schedulers.
+- **Awakeable** — pause an invocation on a token; resume when someone POSTs to its resolve URL. Used for the SafetyAgent's human-in-the-loop step.
 
 ### Trip — `VirtualObject` keyed by `trip_id`
 
@@ -181,21 +178,21 @@ The long-running workflow. Each epoch is one round of the matching algorithm —
 **Calls out to:**
 - Durable async sends: `Dispatch.register_driver` (on transition to idle), `Dispatch.deregister_driver` (on transition away from idle)
 
-High-volume GPS path. The map-matching smoothing (mocked here as an exponential moving average; a real system uses a Marginalized Particle Filter) happens inside the handler. Could be Kafka-fed in production if multi-consumer fan-out emerged, but in this demo only Locations is the direct consumer — so it stays on the same HTTP path the rider app uses.
+High-volume GPS path. The map-matching smoothing (mocked here as an exponential moving average; a real system uses a Marginalized Particle Filter) happens inside the handler. The driver app POSTs pings as fire-and-forget HTTP sends — they're durable on the Restate log from the moment ingress acks them.
 
 ### Features — `VirtualObject` keyed by `entity_type:entity_id:feature_name`
 
 **Domain:** Event-driven applications · **Lifetime:** one VO per feature key (e.g. `region:SF:weather`).
 
 **Requests arrive via:**
-- **Kafka subscription** from `mapping_events` topic — the **only** Kafka path in the system. Restate routes each Kafka record by its key into `Features("<key>").set(<value>)`.
+- **Durable async HTTP send** from external mapping providers — they POST to `/Features/<key>/set/send`. Durable on the Restate log from the moment ingress acks. Same job a Kafka topic would do, without the cluster.
 - Sync RPC reads from ETA, Pricing, Dispatch, SafetyAgent: `get` (shared handler)
 
 **State owned:** `value`, `version`, `last_updated_ms`.
 
 **Calls out to:** Nothing.
 
-Online feature store. The single biggest architectural collapse in the demo: in a typical stack this would be Kafka topics + a Flink job + a separate feature-store service + an SDK to query it. Here the writer publishes to one Kafka topic (because external mapping providers live outside our trust boundary), Restate's subscription delivers the record, and downstream readers query the same VO that holds the value. Three pieces of infrastructure collapse into one primitive.
+Online feature store. The single biggest architectural collapse in the demo: in a typical stack this would be Kafka topics + a Flink job + a separate feature-store service + an SDK to query it. Here external providers POST directly to Restate's ingress, the write is journaled on the Restate log, and downstream readers query the same VO that holds the value. Four pieces of infrastructure collapse into one primitive.
 
 ### SafetyAgent — `VirtualObject` keyed by `trip_id`
 
@@ -222,13 +219,12 @@ The long-running AI agent. Three Restate primitives the other domains don't exer
 
 ## Sync vs async — every interaction classified
 
-Each edge is one of four flavors. The live log tags them so the audience can
+Each edge is one of three flavors. The live log tags them so the audience can
 see the distinction without narration:
 
-- `[sync→]` synchronous RPC (caller awaits the response)
-- `[send→]` durable one-way send on Restate's log
-- `[self→]` delayed self-send (cadence loops; no external scheduler)
-- `[kafka→]` publish to a Kafka topic (used in **one** place — the external feed boundary)
+- `[sync→]` synchronous request (caller awaits the response — external HTTP or internal RPC)
+- `[send→]` durable async send (one-way; the Restate log handles the durable-input-queue job)
+- `[self→]` delayed self-send (cadence loops; same primitive as `[send→]`, just to self with a delay)
 
 | From | To | Flavor | Why |
 |---|---|---|---|
@@ -236,8 +232,8 @@ see the distinction without narration:
 | Rider app | `Trip.confirm` / `cancel` | sync HTTP | App holds for ack |
 | Driver app | `Trip.complete` | sync HTTP | App holds for ack |
 | Driver app | `Locations.set_status` | sync HTTP | State transition with immediate ack |
-| Driver app | `Locations.ping` (GPS) | sync HTTP `/send` | Highest-volume external path. **Restate log handles the durable-input-queue job that a Kafka topic would otherwise do.** |
-| Mapping providers (external) | `Features.set` | **Kafka** → Restate subscription | The one Kafka use in the demo — see "Why Kafka here" below |
+| Driver app | `Locations.ping` (GPS) | HTTP `/send` (durable async) | Highest-volume external path. The Restate log handles the durable-input-queue job. |
+| Mapping providers (external) | `Features.set` | HTTP `/send` (durable async) | External feed, fire-and-forget. **No Kafka.** Durable on the Restate log from acknowledgement. |
 | `Trip` | `Offers.generate` | `[sync→]` | Trip needs the offer to respond to rider |
 | `Trip` | `Pricing.note_demand` | `[send→]` | 1:1, fire-and-forget counter bump |
 | `Trip` | `Dispatch.enqueue_trip` | `[send→]` | 1:1 into the region's matching round |
@@ -257,42 +253,45 @@ see the distinction without narration:
 | `SafetyAgent` | itself (`tick`) | `[self→]` every 8s | Same |
 | Human safety operator | Restate awakeable ingress | sync HTTP | POST resolves the agent's awakeable; agent resumes |
 
-**Everything async in the system, except the one Kafka topic, runs on the
-Restate log.** It replaces what Kafka used to be doing as an internal RPC
-bus. The audience will see exactly two log-prefix shapes for async work:
-`[send→]` (durable async via the Restate log) and `[self→]` (cadence — a
-delayed send to self via the Restate log). Plus one `[kafka→]` shape at the
-external-feed boundary.
+**Everything async — external publishers and internal hops — runs on the
+Restate log.** No Kafka in the system. The audience sees two log-prefix
+shapes for async work: `[send→]` (durable async via the Restate log) and
+`[self→]` (cadence — a delayed send to self).
 
-## Why Kafka in exactly one place
+## Why no Kafka
 
-External mapping providers (weather APIs, traffic feeds, government accident
-reports) sit outside the platform's trust boundary. In real ride-hailing
-stacks they genuinely land on Kafka because (a) the producers aren't yours,
-(b) the same events fan out to many internal consumers, and (c) the log
-needs retention measured in days for replay. That's where Kafka still earns
-its keep, so we left it there:
+This architecture doesn't use Kafka anywhere. Every external write — mapping
+events, GPS pings, rider requests — and every internal hop writes directly
+to the Restate log via Restate's HTTP ingress on `:8080`.
 
-```
-external mapping providers → Kafka topic `mapping_events` → Restate subscription → Features.set
-```
+The argument:
 
-Restate's Kafka subscription routes each record: the Kafka **key** becomes
-the Virtual Object key (e.g. `region:SF:weather`), the JSON **value**
-becomes the `set` handler's payload. From the moment Restate accepts the
-record, it's journaled in the Restate log — so even the Kafka-sourced invocations
-benefit from the same durability/retry semantics as everything else.
+- **Every Restate handler is durable from the moment ingress acks the
+  request.** The Restate log handles the durable-input-queue job a Kafka
+  topic would otherwise do — without the cluster to operate.
+- **For internal RPC**, the sync path is just function calls
+  (`ctx.service_call` / `ctx.object_call`). No bus needed.
+- **For internal one-way / async decoupling between services**, `ctx.send()`
+  writes to the same log. Same durability, retry, ordering, and
+  observability you got from Kafka, with fewer moving parts.
+- **For external publishers**, the HTTP `/send` endpoint gives the same
+  "I publish and it's durable from here" guarantee. No subscription
+  pipeline to operate.
+- **For cadence loops**, delayed self-sends replace cron / Airflow.
 
-**Where Kafka would still belong** (none of which is in our 8 services):
+**Where Kafka would still belong** (none of which is in this demo):
 
-- Analytics consuming every Trip state transition
-- ML training pipelines consuming dispatch assignments
-- Real-time UI dashboards needing push-based fan-out
-- Cross-system flow beyond Restate-land
+- Multi-consumer pub-sub with independent consumer groups and offsets
+- Retention measured in days for analytical replay
+- Cross-system flow beyond your Restate cluster
+- Integration with an existing Kafka ecosystem you don't own
 
-If any of those got added, Kafka would slot in alongside Restate — typically
-as an outbound `ctx.run` that publishes Trip lifecycle events to a topic.
-Restate has first-class Kafka producer support for that pattern.
+If any of those become real requirements, Restate has first-class Kafka
+integration both inbound (subscriptions) and outbound (`ctx.run` producing
+to a topic). They coexist cleanly. The point of this demo is that for the
+vast majority of internal architectures, you don't *need* Kafka — and
+removing it is one less cluster to operate, one less consumer-group story
+to debug, one less integration test surface.
 
 ## How to run the demo
 
@@ -314,7 +313,7 @@ uv venv --python 3.13 .venv
 ./scripts/demo-t1.sh fresh
 ```
 
-Pauses for ENTER, wipes Restate + Kafka state, starts hypercorn. Stays parked
+Pauses for ENTER, wipes Restate state, starts hypercorn. Stays parked
 on the running server. When Phase 3 of the demo asks you to fix the code:
 `Ctrl+C` here, edit `rideco/services/eta.py`, then run
 `./scripts/demo-t1.sh restart`.
@@ -333,8 +332,8 @@ where to look in the Restate Web UI (`http://localhost:9070`).
 
 1. **Quiet trip** — one rider request end-to-end. The full architecture
    visible in ~30 log lines: `[sync→]` RPC chain, `[send→]` Restate log hops,
-   `[self→]` cadence loops, `Kafka` ingest.
-2. **Poison-pill in LA** — inject `weather=BAD` via Kafka. ETA can't parse it,
+   `[self→]` cadence loops.
+2. **Poison-pill in LA** — inject `weather=BAD` via HTTP send. ETA can't parse it,
    raises a non-Terminal exception, Restate retries forever. SF takes the same
    code path and sails through. Per-key failure isolation in action.
 3. **Fix the code** — flip a flag in `eta.py`, restart Terminal 1, watch the
@@ -352,15 +351,15 @@ where to look in the Restate Web UI (`http://localhost:9070`).
 |---|---|
 | `./scripts/demo-t1.sh [fresh\|restart]` | Terminal 1 driver (fresh wipes state) |
 | `./scripts/demo-t2.sh` | Terminal 2 guided 5-phase walkthrough |
-| `./scripts/register.sh` | Register Python deployment + Kafka subscription |
-| `./scripts/reset.sh` | Wipe Restate + Kafka state |
+| `./scripts/register.sh` | Register Python deployment with Restate |
+| `./scripts/reset.sh` | Wipe Restate state |
 | `./scripts/stop.sh` | Reliably stop hypercorn (handles macOS pkill gotcha) |
 | `./scripts/setup-region.sh <region>` | Init a region: features + one idle driver |
 | `./scripts/make-trip.sh <trip_id> <region>` | Rider request + confirm (sync, awaits offer) |
 | `./scripts/make-trip-send.sh <trip_id> <region>` | Rider request fire-and-forget (use when poisoned) |
 | `./scripts/complete-trip.sh <trip_id>` | Mark trip completed; agent shuts down |
 | `./scripts/cancel-trip.sh <trip_id>` | Cancel trip |
-| `./scripts/set-feature.sh <region> <feature> <value>` | Publish feature via Kafka; polls until visible |
+| `./scripts/set-feature.sh <region> <feature> <value>` | Write a feature directly to the Features VO (sync HTTP) |
 | `./scripts/poison.sh [region]` | Inject `weather=BAD` (default region LA) |
 | `./scripts/escalate.sh [region]` | Push `accident_density=0.8` (default region SF) |
 | `./scripts/approve.sh <awakeable_id> [verdict]` | Resolve a suspended SafetyAgent Awakeable |
@@ -368,9 +367,9 @@ where to look in the Restate Web UI (`http://localhost:9070`).
 | `./scripts/show-agent.sh <trip_id>` | Pretty-print SafetyAgent state |
 | `./scripts/show-invocations.sh` | `restate invocations list --status running` with annotations |
 
-Every script that writes to Kafka polls the Features VO until the value
-actually lands — so the demo flow is deterministic, no race against the
-async Kafka subscription path.
+Every script that writes a feature uses a sync HTTP POST to the Features
+VO — the call returns once the durable write is committed, so the demo
+flow is deterministic.
 
 ## Talking points, grouped by domain
 
@@ -386,9 +385,10 @@ These are speaker notes — substantive engineering, not marketing.
 - **In RideCo.** A driver is a Virtual Object. Pings are handler calls.
   Map-matching smoothing happens in the handler (mocked here). A feature is
   also a Virtual Object — same primitive, different key namespace. Writers
-  call `.set`, readers call `.get`. The Kafka topic we kept (`mapping_events`)
-  is there because external providers genuinely sit outside our trust
-  boundary; everything else collapses into VOs.
+  (external mapping providers, driver apps) call `.set` directly via HTTP
+  `/send`; readers call `.get`. Every write is durable on the Restate log
+  from the moment ingress acks. No Kafka, no Flink, no separate feature
+  store.
 
 ### Stateful microservices (Trip, Offers, Pricing, ETA)
 
@@ -457,9 +457,6 @@ This is the domain Temporal does not address at all.
 - **Awakeables for human-in-the-loop.** `(name, future) = ctx.awakeable()`
   produces a token; `await future` suspends. Resolved via Restate's
   awakeable ingress endpoint.
-- **Kafka subscription at the trust-boundary edge.** One topic
-  (`mapping_events`), routed to `Features.set`. Restate's Kafka integration
-  in action; everything internal stays on the Restate log.
 - **Retry vs `TerminalError`.** Regular `Exception` retries forever with
   backoff (poison-pill). `restate.exceptions.TerminalError` ends the
   invocation immediately.
@@ -470,7 +467,6 @@ This is the domain Temporal does not address at all.
 
 - **Restate server:** 1.6.2 (pinned in `docker-compose.yml`)
 - **Restate Python SDK:** `restate_sdk[serde]` 0.18.0
-- **Kafka:** Apache Kafka 3.8.0, single broker, KRaft mode
 - **Python:** 3.13
 - **ASGI server:** Hypercorn (HTTP/2)
 
@@ -479,12 +475,11 @@ This is the domain Temporal does not address at all.
 ```
 rideco/
 ├── architecture.svg           # dark-slate architecture diagram, embedded above
-├── docker-compose.yml         # restate-server 1.6.2 + kafka 3.8.0
-├── restate.toml               # Restate config: declares the Kafka cluster
+├── docker-compose.yml         # restate-server 1.6.2 — that's the whole stack
 ├── hypercorn-config.toml      # ASGI binds :9080
-├── pyproject.toml             # restate_sdk[serde], hypercorn, httpx, aiokafka, rich
+├── pyproject.toml             # restate_sdk[serde], hypercorn, httpx, rich
 ├── Makefile                   # entry-point verbs (serve, register, stop, …)
-├── scripts/                   # 17 demo scripts — see "Scripts reference" above
+├── scripts/                   # demo scripts — see "Scripts reference" above
 ├── rideco/
 │   ├── shared/                # types, region defs, color logging w/ flow tags
 │   ├── services/              # trip, offers, dispatch, locations, pricing,

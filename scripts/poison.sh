@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Poison-pill: publish weather=BAD to a region's Features VO via Kafka.
+# Poison-pill: write weather=BAD to a region's Features VO via the Restate log.
 # ETA's _weather_penalty raises ValueError on "BAD" — non-Terminal exception
 # → Restate retries forever with exponential backoff.
 # Usage: scripts/poison.sh [region]   (default: LA)

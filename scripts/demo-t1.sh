@@ -34,7 +34,7 @@ echo
 MODE="${1:-}"
 if [ -z "$MODE" ]; then
   echo " Pick a mode:"
-  echo "   [f]  fresh start — wipe Restate + Kafka, start hypercorn"
+  echo "   [f]  fresh start — wipe Restate state, start hypercorn"
   echo "   [r]  restart only — keep state, just (re)start hypercorn"
   echo "        (use this after editing rideco/services/eta.py in Phase 3)"
   echo
@@ -48,7 +48,7 @@ fi
 
 if [ "$MODE" = "fresh" ]; then
   echo
-  echo " ── (1/3) docker compose down — wiping Restate + Kafka state ──"
+  echo " ── (1/3) docker compose down — wiping Restate state ──"
   pause
   docker compose down
 

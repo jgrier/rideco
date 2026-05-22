@@ -2,39 +2,9 @@ services:
   restate:
     image: docker.restate.dev/restatedev/restate:1.6.2
     container_name: rideco_restate
-    depends_on:
-      - kafka
     ports:
-      - "8080:8080"   # ingress: rider/driver HTTP calls land here
+      - "8080:8080"   # ingress: all HTTP into the cluster lands here
       - "9070:9070"   # admin + Web UI
       - "9071:9071"   # metadata service
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    volumes:
-      - ./restate.toml:/etc/restate/restate.toml:ro
-    command: ["--config-file", "/etc/restate/restate.toml"]
-
-  kafka:
-    # Single broker in KRaft mode. Used for exactly one topic, `mapping_events`,
-    # so the demo can show Restate's Kafka subscription integration at the
-    # external-feed edge. Every other async hop in RideCo runs on the Restate log.
-    image: apache/kafka:3.8.0
-    container_name: rideco_kafka
-    ports:
-      - "9092:9092"      # listener for restate (inside docker network)
-      - "29092:29092"    # listener for the host (mapping-events sim runs there)
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: "broker,controller"
-      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
-      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
-      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"

@@ -58,26 +58,33 @@ cat <<EOF
  http://localhost:9070 (Restate Web UI) between steps if you want
  to poke around.
 
- Across the demo you'll see five communication patterns. Each phase
- calls out which ones it exercises:
+ Across the demo you'll see three core communication patterns + one
+ special primitive. Each phase calls out which ones it exercises:
 
-   ▸ Sync HTTP from external apps   rider / driver / operator
-   ▸ Kafka subscription             external feed → Features.set (1 place only)
-   ▸ Sync RPC between services      [sync→] tag in T1
-   ▸ Durable async send             [send→] tag in T1 — the Restate log
-                                    replaces what Kafka was doing as
-                                    internal RPC bus
-   ▸ Long-running workflows         Dispatch's batched matching round,
-                                    SafetyAgent suspended on an Awakeable
+   ▸ Sync request               caller awaits a response
+                                — external apps (rider/driver/operator)
+                                — RPC between services ([sync→] in T1)
+   ▸ Durable async send         fire-and-forget into the Restate log
+                                — external publishers (mapping providers)
+                                — between services ([send→] in T1)
+                                Every handler call lands durably; the log
+                                IS the input queue. This is what Kafka
+                                was doing as the internal RPC bus, except
+                                without the operational overhead.
+   ▸ Self-send cadence          delayed send to self — periodic loops
+                                without an external scheduler ([self→])
+   ▸ Awakeable                  pause an invocation on a token; resume
+                                when someone POSTs to its resolve URL.
+                                Human-in-the-loop without a process held.
 EOF
 pause
 
 # ───── boot ──────────────────────────────────────────────────────────
-section "BOOTSTRAP — register Python services + Kafka subscription"
+section "BOOTSTRAP — register Python services with Restate"
 echo
-echo " Tells Restate where to find the Python services and sets up the"
-echo " mapping_events Kafka subscription that routes external feature"
-echo " events into Features.set."
+echo " Tells Restate where to find the Python services. Restate's ingress"
+echo " on :8080 then routes every external HTTP request (sync or /send) to"
+echo " the right handler, with the Restate log doing the durable buffering."
 pause
 run ./scripts/register.sh
 pause
@@ -86,16 +93,16 @@ pause
 section "PHASE 1 — one quiet trip, top to bottom"
 echo
 echo " Channels in this phase:"
-echo "   ▸ Kafka subscription       mapping_events → Features.set"
-echo "   ▸ Sync HTTP from driver    set_status, ping (Locations VO)"
-echo "   ▸ Sync HTTP from rider     request_ride, confirm (Trip VO)"
-echo "   ▸ Sync RPC between svcs    Trip → Offers → ETA + Pricing"
-echo "   ▸ Durable async send       Trip → Pricing/Dispatch/Locations/SafetyAgent"
+echo "   ▸ Sync request             rider request_ride/confirm (Trip VO)"
+echo "                              driver set_status (Locations VO)"
+echo "                              Trip → Offers → ETA + Pricing"
+echo "   ▸ Durable async send       mapping providers → Features.set"
+echo "                              Trip → Pricing/Dispatch/Locations/SafetyAgent"
 echo "                              Dispatch → Trip.assign_driver"
 echo "                              Locations → Dispatch.register_driver"
 echo "   ▸ Self-send cadence        Dispatch close_epoch (5s), SafetyAgent tick (8s)"
 echo
-echo " Going to (a) seed SF with baseline features via Kafka, (b) put"
+echo " Going to (a) seed SF with baseline features (durable HTTP sends), (b) put"
 echo " one driver online, (c) fire one rider request + confirm, (d) wait"
 echo " for the 5s dispatch round to match, (e) read final state."
 echo
@@ -125,7 +132,7 @@ pause
 section "PHASE 2 — poison-pill in LA, SF stays healthy"
 echo
 echo " Channels in this phase:"
-echo "   ▸ Kafka subscription       publish weather=BAD for LA"
+echo "   ▸ Durable async send       publish weather=BAD into Features"
 echo "   ▸ Automatic retry on the   the stuck invocations sit in Restate's"
 echo "     Restate log              durable input queue and retry forever"
 echo "   ▸ Per-key failure          LA jams, SF unaffected by the same code path"
@@ -206,7 +213,7 @@ pause
 section "PHASE 4 — human-in-the-loop (AI agent escalation)"
 echo
 echo " Channels in this phase:"
-echo "   ▸ Kafka subscription       publish accident_density=0.8 for SF"
+echo "   ▸ Durable async send       publish accident_density=0.8 into Features"
 echo "   ▸ ctx.run                  mocked LLM risk score, journaled for replay"
 echo "   ▸ Awakeable suspend        agent pauses cleanly; no Python process held"
 echo "   ▸ Sync HTTP awakeable      operator POSTs verdict; same invocation"
@@ -214,7 +221,7 @@ echo "     resolve                  resumes from exactly where it suspended"
 echo "   ▸ Long-running workflow    the agent itself, running across the trip"
 echo
 echo " t-1's SafetyAgent has been ticking quietly every 8s at risk≈0.2."
-echo " We're going to bump SF's accident_density to 0.8 via Kafka. On its"
+echo " We're going to bump SF's accident_density to 0.8 (durable HTTP send). On its"
 echo " next tick, the agent reads the new feature, scores risk ≥ 0.6,"
 echo " creates an Awakeable, and suspends. No process is held in memory."
 pause
@@ -274,31 +281,30 @@ cat <<EOF
 
  Communication patterns exercised across the five phases:
 
-   ✓ Sync HTTP from external apps
-       rider request_ride/confirm/cancel, driver ping/set_status,
-       app complete, human operator awakeable resolve
+   ✓ Sync request — caller awaits response
+       External:  rider request_ride/confirm/cancel, driver set_status,
+                  app complete, human operator awakeable resolve
+       Internal:  Trip → Offers → ETA + Pricing
+                  Dispatch → Locations.get_position
+                  SafetyAgent → Locations + Features
 
-   ✓ Kafka subscription
-       mapping_events topic → Restate routes by key → Features.set
-       (the only Kafka in the demo — external multi-consumer feed)
-
-   ✓ Sync RPC between services
-       Trip → Offers → ETA + Pricing
-       Dispatch → Locations.get_position
-       SafetyAgent → Locations + Features
-
-   ✓ Durable async send via the Restate log
-       Trip → Pricing.note_demand / Dispatch.enqueue_trip / Locations.accept_trip
-       Trip → SafetyAgent.start_monitoring / stop_monitoring
-       Dispatch → Trip.assign_driver
-       Locations → Dispatch.register_driver / deregister_driver
-       (every place a Kafka topic would have been the internal RPC bus)
+   ✓ Durable async send — fire-and-forget into the Restate log
+       External:  mapping providers → Features.set (weather/traffic/accidents)
+                  driver app → Locations.ping (high-frequency GPS)
+       Internal:  Trip → Pricing.note_demand / Dispatch.enqueue_trip
+                  Trip → Locations.accept_trip
+                  Trip → SafetyAgent.start_monitoring / stop_monitoring
+                  Dispatch → Trip.assign_driver
+                  Locations → Dispatch.register_driver / deregister_driver
+       (No Kafka — the Restate log handles the durable input queue job
+       for every handler entry point, transparently.)
 
    ✓ Self-scheduled cadence
        Dispatch close_epoch every 5s
        Pricing refresh every 10s
        SafetyAgent tick every 8s
-       (the Restate log is the scheduler)
+       (Same primitive as durable async send, just to self with a delay —
+       the Restate log is the scheduler.)
 
    ✓ Long-running workflows
        Dispatch's batched matching round — multi-epoch carry-forward of
@@ -323,7 +329,7 @@ cat <<EOF
    • Awakeables for human-in-the-loop
        Same invocation suspends and resumes; no Python process held.
 
- One Kafka topic at the trust-boundary edge. Everything else on the Restate log.
+ No Kafka. Every external write and every internal hop is on the Restate log.
 
  Reset for another run:
    T1:  Ctrl+C, then ./scripts/demo-t1.sh fresh

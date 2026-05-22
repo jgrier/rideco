@@ -3,7 +3,6 @@ flowchart LR
     Driver([Driver app])
     Provider([Mapping providers<br/>weather / traffic / accidents])
     Operator([Human safety operator])
-    Kafka[("Kafka topic<br/>mapping_events")]
 
     subgraph Restate["Restate cluster — control + data + Restate log in one binary"]
       direction TB
@@ -25,10 +24,10 @@ flowchart LR
       end
     end
 
-    Rider -->|sync HTTP| Trip
-    Driver -->|sync HTTP| Locations
-    Provider -->|publish| Kafka
-    Kafka -.->|Restate subscription| Features
+    Rider -->|sync| Trip
+    Driver -->|sync| Locations
+    Driver ==>|ping| Locations
+    Provider ==>|set/send| Features
     Operator -->|resolve awakeable| Safety
 
     Trip --> Offers
