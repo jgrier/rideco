@@ -1,7 +1,7 @@
 .PHONY: install restate-up restate-down restate-logs serve register \
         sim-riders sim-drivers sim-mapping poison fix-poison clean
 
-PYTHON ?= python3
+PYTHON ?= .venv/bin/python
 INGRESS ?= http://localhost:8080
 ADMIN ?= http://localhost:9070
 DEPLOYMENT ?= http://host.docker.internal:9080

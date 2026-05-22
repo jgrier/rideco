@@ -36,56 +36,7 @@ RideCo's eight services are deliberately spread across all four.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    Rider([Rider app])
-    Driver([Driver app])
-    Provider([Mapping providers<br/>weather / traffic / accidents])
-    Operator([Human safety operator])
-    Kafka[("Kafka topic<br/>mapping_events")]
-
-    subgraph Restate["Restate cluster — control + data + Bifrost log in one binary"]
-      direction TB
-      subgraph SM["Stateful microservices"]
-        Trip["Trip<br/>VO / trip_id"]
-        Offers["Offers<br/>service"]
-        Pricing["Pricing<br/>VO / region"]
-        ETA["ETA<br/>service"]
-      end
-      subgraph ED["Event-driven"]
-        Locations["Locations<br/>VO / driver_id"]
-        Features["Features<br/>VO / entity:id:name"]
-      end
-      subgraph WF["Workflow"]
-        Dispatch["Dispatch<br/>VO / region"]
-      end
-      subgraph AI["AI agent"]
-        Safety["SafetyAgent<br/>VO / trip_id"]
-      end
-    end
-
-    Rider -->|sync HTTP| Trip
-    Driver -->|sync HTTP| Locations
-    Provider -->|publish| Kafka
-    Kafka -.->|Restate subscription| Features
-    Operator -->|resolve awakeable| Safety
-
-    Trip --> Offers
-    Offers --> ETA
-    Offers --> Pricing
-    Dispatch --> Locations
-    Safety --> Locations
-    Safety --> Features
-    ETA --> Features
-    Pricing --> Features
-
-    Trip ==> Pricing
-    Trip ==> Dispatch
-    Trip ==> Locations
-    Trip ==> Safety
-    Dispatch ==> Trip
-    Locations ==> Dispatch
-```
+![Architecture](architecture.svg)
 
 **Arrow legend.** Three line styles cover every async/sync flavor in the demo:
 
@@ -203,99 +154,83 @@ If any of those got added, Kafka would slot in alongside Restate — typically
 as an outbound `ctx.run` that publishes Trip lifecycle events to a topic.
 Restate has first-class Kafka producer support for that pattern.
 
-## How to run
+## How to run the demo
 
 You need Python 3.13 (or 3.11+), Docker, and the
 [`restate` CLI](https://docs.restate.dev/get_started/install).
 
+### One-time setup
+
 ```bash
-# 1. venv + install
 uv venv --python 3.13 .venv
 .venv/bin/python -m pip install -e .
-
-# 2. Bring up Restate 1.6.2 + Kafka 3.8
-make restate-up
-
-# 3. Serve all eight services on :9080
-make serve
-
-# 4. (new terminal) Register the deployment + Kafka subscription
-make register
-make register-kafka
-
-# 5. (three more terminals)
-make sim-drivers      # drivers go online, ping GPS to Locations
-make sim-mapping      # publishes weather/accident events to Kafka
-make sim-riders       # rider requests
-
-# Restate Web UI:    http://localhost:9070
-# Kafka admin port:  localhost:9092 (internal) / 29092 (host)
 ```
 
-## Two demo moments
+### Drive the demo (two terminals)
 
-### A. Poison-pill (stateful microservices)
+**Terminal 1** — the show. Hypercorn log scrolls here as the demo runs.
 
-Shows: failures isolate per-key, retries are server-side and visible, fix
-flows cleanly with no manual queue draining.
+```bash
+./scripts/demo-t1.sh fresh
+```
 
-1. **Set the trap.** Publish a sentinel weather value to Kafka:
-   ```bash
-   make poison    # publishes {"value":"BAD"} to mapping_events for SF
-   ```
-2. **Watch SF jam.** New SF trips invoke ETA, which hits a code path that
-   raises a non-Terminal `ValueError`. Restate retries forever:
-   ```bash
-   restate invocations list --status running
-   ```
-3. **Show isolation.** Trips in other regions take the happy path through
-   the same code. No DLQ to plumb. No consumer-group offsets to reset.
-4. **Fix the code.** In `rideco/services/eta.py`, flip
-   `HANDLE_BAD_WEATHER_GRACEFULLY = False` → `True`.
-5. **Redeploy.** `Ctrl+C` `make serve`, `make serve` again, then `make
-   register`.
-6. **Watch the drain.** The stuck invocation's next retry runs the new code,
-   succeeds, and the running list goes to zero.
+Pauses for ENTER, wipes Restate + Kafka state, starts hypercorn. Stays parked
+on the running server. When Phase 3 of the demo asks you to fix the code:
+`Ctrl+C` here, edit `rideco/services/eta.py`, then run
+`./scripts/demo-t1.sh restart`.
 
-### B. Human-in-the-loop (AI agent orchestration)
+**Terminal 2** — the guided walkthrough.
 
-Shows: per-agent state survives, agents suspend across waits without holding
-processes, an external HTTP call resumes the agent exactly where it left off.
+```bash
+./scripts/demo-t2.sh
+```
 
-1. **Start a trip.** Once a rider request is confirmed and a driver is
-   assigned, Trip kicks off a `SafetyAgent` keyed by that `trip_id`. The
-   agent ticks every 8 seconds, reading driver position and region
-   features, then calling a mocked LLM risk scorer through `ctx.run`.
-2. **Force an escalation.** Crank a region's accident_density past 0.6 via
-   Kafka:
-   ```bash
-   .venv/bin/python -c "
-   import asyncio, json
-   from aiokafka import AIOKafkaProducer
-   async def main():
-       p = AIOKafkaProducer(bootstrap_servers='localhost:29092')
-       await p.start()
-       await p.send_and_wait('mapping_events',
-           key=b'region:SF:accident_density',
-           value=json.dumps({'value': 0.8}).encode())
-       await p.stop()
-   asyncio.run(main())
-   "
-   ```
-   The next tick's risk score crosses the threshold. The agent creates an
-   Awakeable and suspends.
-3. **See the suspended agent.**
-   ```bash
-   restate invocations list
-   ```
-   The `SafetyAgent/{trip_id}/tick` invocation is running but paused. The
-   serve log prints the awakeable name + a ready-to-paste resolve curl.
-4. **Resolve as the human reviewer.**
-   ```bash
-   curl -X POST http://localhost:8080/restate/awakeables/{awakeable_name}/resolve \
-        -H 'Content-Type: application/json' -d '{"verdict":"approve"}'
-   ```
-   The agent resumes immediately and schedules its next tick.
+Walks through five phases, pausing for ENTER between every step. Each step
+tells you what's about to happen, what to look for in Terminal 1's log, and
+where to look in the Restate Web UI (`http://localhost:9070`).
+
+### What the five phases show
+
+1. **Quiet trip** — one rider request end-to-end. The full architecture
+   visible in ~30 log lines: `[sync→]` RPC chain, `[send→]` Bifrost hops,
+   `[self→]` cadence loops, `Kafka` ingest.
+2. **Poison-pill in LA** — inject `weather=BAD` via Kafka. ETA can't parse it,
+   raises a non-Terminal exception, Restate retries forever. SF takes the same
+   code path and sails through. Per-key failure isolation in action.
+3. **Fix the code** — flip a flag in `eta.py`, restart Terminal 1, watch the
+   stuck retries drain on Restate's next backoff retry.
+4. **Human-in-the-loop** — bump SF accident_density above the SafetyAgent's
+   threshold. The agent reads the new feature on its next tick, opens an
+   Awakeable, and suspends. You resolve the Awakeable as the operator via an
+   HTTP POST; the agent resumes from exactly where it left off.
+5. **Complete the trip** — terminal state transition. Trip fires a Bifrost
+   send to `SafetyAgent.stop_monitoring`; the agent shuts down.
+
+### Scripts reference
+
+| Script | Purpose |
+|---|---|
+| `./scripts/demo-t1.sh [fresh\|restart]` | Terminal 1 driver (fresh wipes state) |
+| `./scripts/demo-t2.sh` | Terminal 2 guided 5-phase walkthrough |
+| `./scripts/register.sh` | Register Python deployment + Kafka subscription |
+| `./scripts/reset.sh` | Wipe Restate + Kafka state |
+| `./scripts/stop.sh` | Reliably stop hypercorn (handles macOS pkill gotcha) |
+| `./scripts/setup-region.sh <region>` | Init a region: features + one idle driver |
+| `./scripts/make-trip.sh <trip_id> <region>` | Rider request + confirm (sync, awaits offer) |
+| `./scripts/make-trip-send.sh <trip_id> <region>` | Rider request fire-and-forget (use when poisoned) |
+| `./scripts/complete-trip.sh <trip_id>` | Mark trip completed; agent shuts down |
+| `./scripts/cancel-trip.sh <trip_id>` | Cancel trip |
+| `./scripts/set-feature.sh <region> <feature> <value>` | Publish feature via Kafka; polls until visible |
+| `./scripts/poison.sh [region]` | Inject `weather=BAD` (default region LA) |
+| `./scripts/escalate.sh [region]` | Push `accident_density=0.8` (default region SF) |
+| `./scripts/approve.sh <awakeable_id> [verdict]` | Resolve a suspended SafetyAgent Awakeable |
+| `./scripts/show-trip.sh <trip_id>` | Pretty-print Trip state + status legend |
+| `./scripts/show-agent.sh <trip_id>` | Pretty-print SafetyAgent state |
+| `./scripts/show-invocations.sh` | `restate invocations list --status running` with annotations |
+
+Every script that writes to Kafka polls the Features VO until the value
+actually lands — so the demo flow is deterministic, no race against the
+async Kafka subscription path.
 
 ## Talking points, grouped by domain
 
@@ -403,11 +338,13 @@ This is the domain Temporal does not address at all.
 
 ```
 rideco/
+├── architecture.svg           # dark-slate architecture diagram, embedded above
 ├── docker-compose.yml         # restate-server 1.6.2 + kafka 3.8.0
 ├── restate.toml               # Restate config: declares the Kafka cluster
 ├── hypercorn-config.toml      # ASGI binds :9080
 ├── pyproject.toml             # restate_sdk[serde], hypercorn, httpx, aiokafka, rich
-├── Makefile                   # dev-loop verbs (incl. register-kafka)
+├── Makefile                   # entry-point verbs (serve, register, stop, …)
+├── scripts/                   # 17 demo scripts — see "Scripts reference" above
 ├── rideco/
 │   ├── shared/                # types, region defs, color logging w/ flow tags
 │   ├── services/              # trip, offers, dispatch, locations, pricing,

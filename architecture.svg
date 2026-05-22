@@ -1,0 +1,222 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 920" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+
+    <linearGradient id="extGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#64748b"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+
+    <linearGradient id="kafkaGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#dc2626"/>
+    </linearGradient>
+
+    <linearGradient id="smGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+
+    <linearGradient id="edGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8b5cf6"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+
+    <linearGradient id="wfGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+
+    <linearGradient id="aiGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ec4899"/>
+      <stop offset="100%" stop-color="#db2777"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-5%" y="-5%" width="115%" height="115%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+
+    <marker id="arrowCyan" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
+    </marker>
+    <marker id="arrowYellow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="12" markerHeight="8" orient="auto-start-reverse">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f87171"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="920" rx="12" fill="url(#bgGrad)"/>
+
+  <!-- Title -->
+  <text x="600" y="32" text-anchor="middle" fill="#f1f5f9" font-size="22" font-weight="600">RideCo on Restate</text>
+  <text x="600" y="55" text-anchor="middle" fill="#94a3b8" font-size="14">Eight services across the four domains Restate covers — one Kafka edge, Bifrost everywhere else</text>
+
+  <!-- External actors -->
+  <rect x="60"  y="85" width="140" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="130" y="120" text-anchor="middle" fill="white" font-size="14" font-weight="600">Rider app</text>
+
+  <rect x="230" y="85" width="140" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="300" y="120" text-anchor="middle" fill="white" font-size="14" font-weight="600">Driver app</text>
+
+  <rect x="400" y="85" width="180" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="490" y="113" text-anchor="middle" fill="white" font-size="14" font-weight="600">Mapping providers</text>
+  <text x="490" y="130" text-anchor="middle" fill="#cbd5e1" font-size="11">weather · traffic · accidents</text>
+
+  <rect x="980" y="85" width="180" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="1070" y="113" text-anchor="middle" fill="white" font-size="14" font-weight="600">Human safety</text>
+  <text x="1070" y="130" text-anchor="middle" fill="white" font-size="14" font-weight="600">operator</text>
+
+  <!-- Kafka cylinder -->
+  <g filter="url(#shadow)">
+    <ellipse cx="490" cy="170" rx="95" ry="8" fill="#b91c1c"/>
+    <rect x="395" y="170" width="190" height="40" fill="url(#kafkaGrad)"/>
+    <ellipse cx="490" cy="210" rx="95" ry="8" fill="#b91c1c"/>
+  </g>
+  <text x="490" y="195" text-anchor="middle" fill="white" font-size="13" font-weight="600">Kafka topic</text>
+  <text x="490" y="210" text-anchor="middle" fill="#fee2e2" font-size="11">mapping_events</text>
+
+  <!-- Restate cluster outline -->
+  <rect x="35" y="245" width="1130" height="615" rx="16" fill="#0b1220" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.95"/>
+  <text x="55" y="270" fill="#e2e8f0" font-size="14" font-weight="600">Restate cluster</text>
+  <text x="155" y="270" fill="#94a3b8" font-size="13">— control + data + Bifrost log in a single binary</text>
+
+  <!-- ====== Stateful microservices band ====== -->
+  <rect x="55" y="290" width="1090" height="130" rx="10" fill="#1e3a8a" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.35" stroke-width="1"/>
+  <text x="75" y="310" fill="#93c5fd" font-size="11" font-weight="700" letter-spacing="1.5">STATEFUL MICROSERVICES</text>
+
+  <rect x="85" y="328" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="157.5" y="354" text-anchor="middle" fill="white" font-size="14" font-weight="600">Trip</text>
+  <text x="157.5" y="376" text-anchor="middle" fill="#dbeafe" font-size="11">VO / trip_id</text>
+  <text x="157.5" y="392" text-anchor="middle" fill="#bfdbfe" font-size="10">lifecycle state machine</text>
+
+  <rect x="250" y="328" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="322.5" y="354" text-anchor="middle" fill="white" font-size="14" font-weight="600">Offers</text>
+  <text x="322.5" y="376" text-anchor="middle" fill="#dbeafe" font-size="11">stateless service</text>
+  <text x="322.5" y="392" text-anchor="middle" fill="#bfdbfe" font-size="10">offer synthesis</text>
+
+  <rect x="415" y="328" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="487.5" y="354" text-anchor="middle" fill="white" font-size="14" font-weight="600">ETA</text>
+  <text x="487.5" y="376" text-anchor="middle" fill="#dbeafe" font-size="11">stateless service</text>
+  <text x="487.5" y="392" text-anchor="middle" fill="#bfdbfe" font-size="10">arrival prediction</text>
+
+  <rect x="580" y="328" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="652.5" y="354" text-anchor="middle" fill="white" font-size="14" font-weight="600">Pricing</text>
+  <text x="652.5" y="376" text-anchor="middle" fill="#dbeafe" font-size="11">VO / region</text>
+  <text x="652.5" y="392" text-anchor="middle" fill="#bfdbfe" font-size="10">surge multiplier</text>
+  <text x="720" y="343" text-anchor="end" fill="#fde68a" font-size="10" font-weight="700">↻ 10s</text>
+
+  <!-- ====== Event-driven band ====== -->
+  <rect x="55" y="440" width="1090" height="130" rx="10" fill="#4c1d95" fill-opacity="0.18" stroke="#8b5cf6" stroke-opacity="0.35" stroke-width="1"/>
+  <text x="75" y="460" fill="#c4b5fd" font-size="11" font-weight="700" letter-spacing="1.5">EVENT-DRIVEN</text>
+
+  <rect x="85" y="478" width="165" height="75" rx="8" fill="url(#edGrad)" filter="url(#shadow)"/>
+  <text x="167.5" y="504" text-anchor="middle" fill="white" font-size="14" font-weight="600">Locations</text>
+  <text x="167.5" y="526" text-anchor="middle" fill="#ede9fe" font-size="11">VO / driver_id</text>
+  <text x="167.5" y="542" text-anchor="middle" fill="#ddd6fe" font-size="10">GPS smoothing + state</text>
+
+  <rect x="945" y="478" width="165" height="75" rx="8" fill="url(#edGrad)" filter="url(#shadow)"/>
+  <text x="1027.5" y="504" text-anchor="middle" fill="white" font-size="14" font-weight="600">Features</text>
+  <text x="1027.5" y="526" text-anchor="middle" fill="#ede9fe" font-size="11">VO / entity:id:name</text>
+  <text x="1027.5" y="542" text-anchor="middle" fill="#ddd6fe" font-size="10">online feature store</text>
+
+  <!-- ====== Workflow band ====== -->
+  <rect x="55" y="590" width="525" height="130" rx="10" fill="#78350f" fill-opacity="0.18" stroke="#f59e0b" stroke-opacity="0.35" stroke-width="1"/>
+  <text x="75" y="610" fill="#fcd34d" font-size="11" font-weight="700" letter-spacing="1.5">WORKFLOW</text>
+
+  <rect x="175" y="628" width="240" height="75" rx="8" fill="url(#wfGrad)" filter="url(#shadow)"/>
+  <text x="295" y="654" text-anchor="middle" fill="white" font-size="14" font-weight="600">Dispatch</text>
+  <text x="295" y="676" text-anchor="middle" fill="#fef3c7" font-size="11">VO / region</text>
+  <text x="295" y="692" text-anchor="middle" fill="#fde68a" font-size="10">batched matching round</text>
+  <text x="410" y="643" text-anchor="end" fill="#fde68a" font-size="10" font-weight="700">↻ 5s</text>
+
+  <!-- ====== AI agent band ====== -->
+  <rect x="605" y="590" width="540" height="130" rx="10" fill="#831843" fill-opacity="0.20" stroke="#ec4899" stroke-opacity="0.35" stroke-width="1"/>
+  <text x="625" y="610" fill="#f9a8d4" font-size="11" font-weight="700" letter-spacing="1.5">AI AGENT</text>
+
+  <rect x="745" y="628" width="280" height="75" rx="8" fill="url(#aiGrad)" filter="url(#shadow)"/>
+  <text x="885" y="654" text-anchor="middle" fill="white" font-size="14" font-weight="600">SafetyAgent</text>
+  <text x="885" y="676" text-anchor="middle" fill="#fce7f3" font-size="11">VO / trip_id</text>
+  <text x="885" y="692" text-anchor="middle" fill="#fbcfe8" font-size="10">per-trip monitor · awakeable · ctx.run</text>
+  <text x="1020" y="643" text-anchor="end" fill="#fbcfe8" font-size="10" font-weight="700">↻ 8s</text>
+
+  <!-- ====== ARROWS ====== -->
+
+  <!-- External: Rider -> Trip (sync, cyan) -->
+  <path d="M 130 145 L 130 215 Q 130 245 142 268 L 142 328" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <text x="86" y="225" fill="#67e8f9" font-size="11">request_ride</text>
+
+  <!-- External: Driver -> Locations (sync, cyan) -->
+  <path d="M 300 145 L 300 425 Q 300 460 260 478" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <text x="306" y="240" fill="#67e8f9" font-size="11">set_status</text>
+  <text x="306" y="254" fill="#67e8f9" font-size="11">ping</text>
+
+  <!-- External: Mapping -> Kafka (gray) -->
+  <path d="M 490 145 L 490 162" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowGray)"/>
+  <text x="500" y="160" fill="#cbd5e1" font-size="11">publish</text>
+
+  <!-- Kafka -> Features (Restate subscription, red dashed) -->
+  <path d="M 585 195 Q 850 200 945 480" fill="none" stroke="#f87171" stroke-width="2.5" stroke-dasharray="7,4" marker-end="url(#arrowRed)"/>
+  <text x="730" y="195" fill="#fca5a5" font-size="11" font-weight="600">Restate subscription</text>
+
+  <!-- Operator -> SafetyAgent (sync, awakeable resolve) -->
+  <path d="M 1070 145 L 1070 600 Q 1070 628 1010 640" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <text x="1078" y="380" fill="#67e8f9" font-size="11">resolve</text>
+  <text x="1078" y="394" fill="#67e8f9" font-size="11">awakeable</text>
+
+  <!-- Internal sync: Trip -> Offers -->
+  <line x1="230" y1="365" x2="247" y2="365" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+  <!-- Internal sync: Offers -> ETA -->
+  <line x1="395" y1="365" x2="412" y2="365" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+  <!-- Internal sync: Offers -> Pricing (curve over ETA) -->
+  <path d="M 395 358 Q 487 305 580 358" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+
+  <!-- Bifrost: Trip -> Dispatch (yellow thick) -->
+  <path d="M 157 403 Q 157 500 240 628" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
+  <text x="100" y="495" fill="#fcd34d" font-size="11" font-weight="600">enqueue_trip</text>
+
+  <!-- Bifrost: Dispatch -> Trip (yellow thick, return) -->
+  <path d="M 350 628 Q 270 500 180 403" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
+  <text x="265" y="510" fill="#fcd34d" font-size="11" font-weight="600">assign_driver</text>
+
+  <!-- Bifrost: Locations -> Dispatch -->
+  <path d="M 220 553 Q 240 590 260 628" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
+  <text x="225" y="585" fill="#fcd34d" font-size="11" font-weight="600">register_driver</text>
+
+  <!-- Bifrost: Trip -> SafetyAgent (yellow thick, long) -->
+  <path d="M 230 380 Q 500 380 745 645" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
+  <text x="490" y="375" fill="#fcd34d" font-size="11" font-weight="600">start_monitoring</text>
+
+  <!-- Sync reads to Features (combined visual cue, light cyan) -->
+  <path d="M 560 365 Q 750 380 945 510" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.55" marker-end="url(#arrowCyan)"/>
+  <path d="M 725 365 Q 850 410 945 490" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.55" marker-end="url(#arrowCyan)"/>
+  <path d="M 1010 628 Q 1080 580 1110 555" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.55" marker-end="url(#arrowCyan)"/>
+  <text x="945" y="455" text-anchor="end" fill="#67e8f9" font-size="11" font-style="italic">reads from Features</text>
+
+  <!-- ====== LEGEND ====== -->
+  <g transform="translate(60, 880)">
+    <text x="0" y="-5" fill="#cbd5e1" font-size="12" font-weight="700" letter-spacing="1.5">FLOW LEGEND</text>
+
+    <line x1="0" y1="15" x2="60" y2="15" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+    <text x="75" y="19" fill="#e2e8f0" font-size="12">sync RPC — caller awaits</text>
+
+    <line x1="280" y1="15" x2="340" y2="15" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
+    <text x="355" y="19" fill="#e2e8f0" font-size="12">Bifrost durable send — one-way, journaled</text>
+
+    <line x1="700" y1="15" x2="760" y2="15" stroke="#f87171" stroke-width="2.5" stroke-dasharray="7,4" marker-end="url(#arrowRed)"/>
+    <text x="775" y="19" fill="#e2e8f0" font-size="12">Kafka subscription — external feed only</text>
+
+    <text x="990" y="19" fill="#fde68a" font-size="12" font-weight="700">↻ Ns</text>
+    <text x="1025" y="19" fill="#e2e8f0" font-size="12">self-send cadence</text>
+  </g>
+</svg>

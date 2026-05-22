@@ -1,0 +1,48 @@
+flowchart LR
+    Rider([Rider app])
+    Driver([Driver app])
+    Provider([Mapping providers<br/>weather / traffic / accidents])
+    Operator([Human safety operator])
+    Kafka[("Kafka topic<br/>mapping_events")]
+
+    subgraph Restate["Restate cluster — control + data + Bifrost log in one binary"]
+      direction TB
+      subgraph SM["Stateful microservices"]
+        Trip["Trip<br/>VO / trip_id"]
+        Offers["Offers<br/>service"]
+        Pricing["Pricing<br/>VO / region"]
+        ETA["ETA<br/>service"]
+      end
+      subgraph ED["Event-driven"]
+        Locations["Locations<br/>VO / driver_id"]
+        Features["Features<br/>VO / entity:id:name"]
+      end
+      subgraph WF["Workflow"]
+        Dispatch["Dispatch<br/>VO / region"]
+      end
+      subgraph AI["AI agent"]
+        Safety["SafetyAgent<br/>VO / trip_id"]
+      end
+    end
+
+    Rider -->|sync HTTP| Trip
+    Driver -->|sync HTTP| Locations
+    Provider -->|publish| Kafka
+    Kafka -.->|Restate subscription| Features
+    Operator -->|resolve awakeable| Safety
+
+    Trip --> Offers
+    Offers --> ETA
+    Offers --> Pricing
+    Dispatch --> Locations
+    Safety --> Locations
+    Safety --> Features
+    ETA --> Features
+    Pricing --> Features
+
+    Trip ==> Pricing
+    Trip ==> Dispatch
+    Trip ==> Locations
+    Trip ==> Safety
+    Dispatch ==> Trip
+    Locations ==> Dispatch
