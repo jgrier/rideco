@@ -1,0 +1,7 @@
+# Restate server config — minimal, just enough to declare the Kafka cluster
+# that the mapping_events subscription reads from. All other Restate settings
+# stay at defaults.
+
+[[ingress.kafka-clusters]]
+name = "rideco"
+brokers = ["PLAINTEXT://kafka:9092"]
