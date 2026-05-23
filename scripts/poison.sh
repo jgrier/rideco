@@ -1,33 +1,44 @@
 #!/usr/bin/env bash
-# Poison-pill: write weather=BAD to a region's Features VO via the Restate log.
-# ETA's _weather_penalty raises ValueError on "BAD" — non-Terminal exception
-# → Restate retries forever with exponential backoff.
-# Usage: scripts/poison.sh [region]   (default: LA)
+# Poison-pill: publish a sentinel value the Features service can't process.
+# Uses the /send endpoint so the publisher fires-and-forgets — same shape
+# as a real upstream emitter. The Features.set invocation gets stuck in
+# Restate's retry queue. Subsequent set() calls for the same key queue up
+# behind it (per-key exclusive serialization). Other keys are unaffected.
+#
+# Usage: ./scripts/poison.sh [region]   (default: LA)
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INGRESS="${INGRESS:-http://localhost:8080}"
 REGION="${1:-LA}"
+KEY="region:$REGION:weather"
 
 echo "════════════════════════════════════════════════════════════════"
-echo " POISON-PILL — region=$REGION"
+echo " POISON-PILL — region=$REGION  feature=weather"
 echo "════════════════════════════════════════════════════════════════"
 echo
-echo " Setting region:$REGION:weather = \"BAD\""
+echo " Publishing {\"value\": \"POISON\"} to Features/$KEY/set/send"
 echo
-echo " ETA's _weather_penalty() doesn't know how to handle this sentinel."
-echo " It raises a regular Python ValueError — NOT a TerminalError — so"
-echo " Restate retries the invocation forever with exponential backoff."
-echo " Other regions are unaffected (per-key isolation)."
+echo " Features.set is wired to raise a non-Terminal ValueError on the"
+echo " POISON sentinel. Restate retries the invocation forever with"
+echo " exponential backoff. Because Features is a Virtual Object,"
+echo " subsequent set() calls for the SAME key queue up behind the"
+echo " stuck one — that's per-key failure isolation."
 echo
 
-"$SCRIPT_DIR/set-feature.sh" "$REGION" weather BAD
+curl -s -X POST "$INGRESS/Features/$KEY/set/send" \
+  -H 'Content-Type: application/json' \
+  -d '{"value":"POISON"}' \
+  | python3 -m json.tool
 
+echo
+echo " ✓ Send accepted into the Restate log. The set() invocation is now"
+echo "   stuck retrying."
 echo
 echo " Next steps:"
-echo "   scripts/make-trip-send.sh t-poison-$REGION $REGION   # will jam in ETA"
-echo "   scripts/show-invocations.sh                          # see the stuck retries"
+echo "   ./scripts/show-invocations.sh                  # see the stuck Features.set"
+echo "   ./scripts/set-feature.sh $REGION weather clear  # this will queue behind it"
 echo
-echo " To fix: edit rideco/services/eta.py → HANDLE_BAD_WEATHER_GRACEFULLY = True"
+echo " To fix: edit rideco/services/features.py → HANDLE_POISON_GRACEFULLY = True"
 echo "   Then in Terminal 1: Ctrl+C → make serve"
-echo "   Then in Terminal 2: scripts/register.sh"
-echo "   Stuck invocations will drain on next retry."
+echo "   Then in Terminal 2: ./scripts/register.sh"
+echo "   Stuck invocation drains on next retry; the queued good message lands."

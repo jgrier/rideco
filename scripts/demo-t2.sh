@@ -129,18 +129,23 @@ run ./scripts/show-agent.sh t-1
 pause
 
 # ───── PHASE 2 ───────────────────────────────────────────────────────
-section "PHASE 2 — poison-pill in LA, SF stays healthy"
+section "PHASE 2 — poison-pill at the input, per-key isolation"
 echo
 echo " Channels in this phase:"
-echo "   ▸ Durable async send       publish weather=BAD into Features"
-echo "   ▸ Automatic retry on the   the stuck invocations sit in Restate's"
-echo "     Restate log              durable input queue and retry forever"
-echo "   ▸ Per-key failure          LA jams, SF unaffected by the same code path"
-echo "     isolation"
+echo "   ▸ Durable async send       publish a POISON sentinel into"
+echo "                              Features.set/send"
+echo "   ▸ Automatic retry          Features.set raises on POISON → Restate"
+echo "                              retries in backing-off state"
+echo "   ▸ Per-key serialization    subsequent set() for the same key queues"
+echo "                              behind the stuck one; other keys (and"
+echo "                              other regions) keep working"
 echo
-echo " Inject weather=BAD into LA. ETA can't parse 'BAD' → ValueError →"
-echo " Restate retries forever with exponential backoff (per-key)."
-echo " Other regions are unaffected — that's the slide."
+echo " Publish a POISON value to LA's weather feature. Features.set is"
+echo " wired to raise a non-Terminal ValueError on this sentinel — same"
+echo " shape as an upstream system emitting a malformed event. Restate"
+echo " retries it forever; the next set() for region:LA:weather queues"
+echo " behind the stuck one (Virtual Object exclusive serialization)."
+echo " SF and every other key remain unaffected."
 pause
 
 run ./scripts/setup-region.sh LA
@@ -150,23 +155,33 @@ run ./scripts/poison.sh LA
 pause
 
 echo
-echo " Fire an LA trip (fire-and-forget — rider doesn't wait for a stuck offer)"
-run ./scripts/make-trip-send.sh t-poison-LA LA
+echo " Try to follow the poison with a 'good' update for the same key."
+echo " It will queue behind the stuck invocation — it can't land until"
+echo " the poison-pill drains."
+run ./scripts/set-feature.sh LA weather clear &
+SETFPID=$!
+sleep 1
+echo
+echo " (that set-feature call is hanging — sync POST waits for the durable"
+echo " write to complete, but the previous one is still retrying.)"
 pause
 
 echo
-echo " Now an SF trip — same code path, healthy region. Should sail through."
+echo " Now an SF trip — different region, different VO key. Should sail through."
 run ./scripts/make-trip.sh t-healthy-SF SF
 echo
 countdown 3
 pause
 
 echo
-echo " Running invocations — LA is jammed, SF was never blocked."
+echo " All in-flight invocations — backing-off (POISON) + pending (queued clear)"
+echo " + scheduled (cadence loops). LA is jammed at the input; SF was never"
+echo " blocked."
 run ./scripts/show-invocations.sh
 echo
-echo " Restate UI → Invocations: you'll see Trip/t-poison-LA/request_ride"
-echo " and Offers/generate climbing in duration. Failure isolated per-key."
+echo " Restate UI → Invocations: you'll see Features/region:LA:weather/set"
+echo " in 'backing-off' with the full ValueError trace, and a second 'pending'"
+echo " set call queued behind it."
 pause
 
 # ───── PHASE 3 ───────────────────────────────────────────────────────
@@ -174,13 +189,14 @@ section "PHASE 3 — fix the code, watch the drain"
 echo
 echo " Channels in this phase:"
 echo "   ▸ Hot redeploy             re-register the same URL with new code"
-echo "   ▸ Retry against new code   the stuck invocation hits the fix on its"
-echo "                              next backoff tick — no manual queue drain"
+echo "   ▸ Retry against new code   the stuck Features.set hits the fix on"
+echo "                              its next backoff tick; queued message"
+echo "                              behind it lands next — no manual drain"
 echo
 echo " Now you fix the bug. Three things in order:"
 echo
-echo "   1. In your editor: open  rideco/services/eta.py"
-echo "      Find:  HANDLE_BAD_WEATHER_GRACEFULLY = False"
+echo "   1. In your editor: open  rideco/services/features.py"
+echo "      Find:  HANDLE_POISON_GRACEFULLY = False"
 echo "      Change to: True"
 echo "      Save."
 echo
@@ -193,20 +209,28 @@ pause
 
 run ./scripts/register.sh
 echo
-echo " Now wait for Restate to retry the stuck invocation. Exponential"
-echo " backoff: first retry ~1s, 2s, 4s, 8s, 16s, ... give it ~15s."
-countdown 15
+echo " Now wait for Restate to retry. Exponential backoff means the next"
+echo " retry could be up to ~30s out depending on how long the jam ran."
+countdown 30
 pause
 
 run ./scripts/show-invocations.sh
 echo
-echo " Should be 0 running. The stuck invocation hit the fixed code on"
-echo " its next retry, succeeded, and completed."
+echo " The stuck Features.set drained (next retry hit the fixed code) and"
+echo " the queued 'clear' set() — which had been pending — also landed."
 pause
 
-run ./scripts/show-trip.sh t-poison-LA
+run ./scripts/show-trip.sh t-healthy-SF
 echo
-echo " Trip should now be status=quoted with a real offer. Drained."
+echo " The unaffected SF trip ended assigned earlier; this just confirms"
+echo " nothing about Phase 2's events bled across regions."
+echo
+echo " Verify the LA weather feature is now whatever the queued update wrote:"
+.venv/bin/python -c "
+import httpx
+r = httpx.post('http://localhost:8080/Features/region:LA:weather/get', json={})
+print(r.json())
+"
 pause
 
 # ───── PHASE 4 ───────────────────────────────────────────────────────

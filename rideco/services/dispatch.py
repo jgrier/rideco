@@ -6,11 +6,16 @@ emit assignments, carry unmatched riders forward to the next batch. Demo
 shape: same cadence, greedy nearest-driver instead of Hungarian (good enough
 to show the architecture).
 
+Dependency is one-way: Trip calls Dispatch with an awakeable token; Dispatch
+resolves it when a match is found. Dispatch never imports Trip — it has no
+knowledge of Trip's state machine. It just produces matches and resolves
+the awakeables it was handed.
+
 Key design choices worth pointing at on stage:
 - One Virtual Object per region. State is the active driver pool and the
-  pending trip queue. Per-key serialization is free.
-- Epoch cadence advances itself via a delayed `close_epoch` send to the same
-  key. No external scheduler, no cron service.
+  pending trip queue (with each trip's awakeable token).
+- Epoch cadence advances itself via a delayed `close_epoch` send to the
+  same key. No external scheduler.
 - Trip enqueue, driver register/deregister, and `close_epoch` are all
   serialized by region so the matcher always sees a consistent snapshot.
 """
@@ -21,7 +26,6 @@ import restate
 
 from rideco.shared.log import log
 from rideco.shared.types import (
-    DRIVER_EN_ROUTE,
     DRIVER_IDLE,
     feature_key,
     ENTITY_REGION,
@@ -57,13 +61,18 @@ async def deregister_driver(ctx: restate.ObjectContext, payload: dict) -> dict:
 
 @dispatch.handler("enqueue_trip")
 async def enqueue_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
-    """A Trip joins the next dispatch round for this region."""
+    """A Trip joins the next dispatch round for this region.
+
+    Payload carries the trip's awakeable token. We hold it until matching,
+    then resolve it with the driver_id. Dispatch never calls back into Trip.
+    """
     trip_id = payload["trip_id"]
     origin = payload["origin"]
+    awakeable = payload["awakeable"]
     region = ctx.key()
 
     pending = (await ctx.get("pending_trips", type_hint=list)) or []
-    pending.append({"trip_id": trip_id, "origin": origin})
+    pending.append({"trip_id": trip_id, "origin": origin, "awakeable": awakeable})
     ctx.set("pending_trips", pending)
 
     # Kick off the round loop on first enqueue.
@@ -84,7 +93,7 @@ def _euclid(a: dict, b: dict) -> float:
 
 @dispatch.handler("close_epoch")
 async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
-    """Snapshot pending trips + active drivers, run matching, emit assignments.
+    """Snapshot pending trips + active drivers, run matching, resolve awakeables.
 
     Greedy by nearest driver. A real implementation would build edge weights from
     ETA, driver value-function (the reinforcement-learning approach common in
@@ -125,7 +134,11 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
                 best = (d, driver_id)
         if best is not None:
             used_drivers.add(best[1])
-            assignments.append({"trip_id": trip["trip_id"], "driver_id": best[1]})
+            assignments.append({
+                "trip_id": trip["trip_id"],
+                "driver_id": best[1],
+                "awakeable": trip["awakeable"],
+            })
         else:
             leftover.append(trip)
 
@@ -134,14 +147,14 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
         matched=len(assignments), carried_over=len(leftover),
         accident_density=accident_res.get("value"))
 
-    # Notify Trips of their assignment (one-way so the matcher doesn't block).
-    # NB: importing trip here to avoid a circular import at module load.
-    from rideco.services import trip as trip_svc
+    # Resolve each match's awakeable — this is the ONLY way Dispatch
+    # communicates results outward. No knowledge of Trip required.
     for a in assignments:
-        log("Dispatch", "→ Trip.assign_driver", flow="send",
-            trip=a["trip_id"], driver=a["driver_id"])
-        ctx.object_send(trip_svc.assign_driver, key=a["trip_id"],
-                        arg={"driver_id": a["driver_id"], "region": region, "epoch_id": epoch_id})
+        log("Dispatch", "resolve_awakeable", trip=a["trip_id"], driver=a["driver_id"])
+        ctx.resolve_awakeable(a["awakeable"], {
+            "driver_id": a["driver_id"],
+            "epoch_id": epoch_id,
+        })
 
     # Carry unmatched trips into the next epoch and schedule the next close.
     ctx.set("pending_trips", leftover)

@@ -4,12 +4,6 @@ Real production flow uses gradient-boosted-tree models with reliability SLAs
 per ETA bracket — only ETAs meeting an SLA are returned. The demo mocks
 that: a base estimate is adjusted by region-level features (weather,
 accident_density), then a reliability score is attached.
-
-**Poison-pill location.** When a region's weather feature is set to the sentinel
-value `"BAD"`, this handler hits a code path that raises a *non-Terminal*
-exception. Restate retries it forever with exponential backoff, isolated in the
-runtime's retry queue. Good traffic in other regions keeps flowing. Fix is in
-the marked branch below — flip the flag and re-register.
 """
 
 import math
@@ -21,10 +15,6 @@ from rideco.shared.types import ENTITY_REGION, feature_key
 from rideco.services import features as features_svc
 
 eta = restate.Service("ETA")
-
-# Flip this to True to "fix" the poison-pill scenario on stage. Re-register
-# the deployment with --force after flipping. Stuck invocations drain.
-HANDLE_BAD_WEATHER_GRACEFULLY = False
 
 
 def _haversine_m(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> float:
@@ -39,11 +29,6 @@ def _haversine_m(a_lat: float, a_lng: float, b_lat: float, b_lng: float) -> floa
 
 def _weather_penalty(weather_value: str) -> float:
     """Map a weather feature value to a travel-time multiplier."""
-    if weather_value == "BAD" and not HANDLE_BAD_WEATHER_GRACEFULLY:
-        # The poison-pill branch. Real bug: somebody upstream emitted a sentinel
-        # that this handler wasn't built to parse. Raised as a regular Exception
-        # so Restate retries it (vs TerminalError which would propagate).
-        return float(weather_value)  # raises ValueError
     return {
         "clear": 1.0,
         "rain_light": 1.1,

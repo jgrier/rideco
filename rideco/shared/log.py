@@ -1,10 +1,10 @@
-"""Color-coded structured logging for stage demos.
+"""Color-coded structured logging.
 
-The `flow` keyword arg prepends a flow tag so the audience can see, live,
-which interactions are synchronous RPC vs durable async send (Restate log)
-vs delayed self-send for cadence. Used at the *call site* of every
-inter-service interaction — the sender annotates the flow, the receiver
-just logs what it did.
+The `flow` keyword arg prepends a flow tag so each line shows which
+interaction kind it is: synchronous RPC vs durable async send (Restate log)
+vs delayed self-send (same primitive, just to self with a delay). Used at
+the *call site* of every inter-service interaction — the sender annotates
+the flow, the receiver just logs what it did.
 
   flow="sync"   →  [sync→]    sync RPC (caller awaits)
   flow="send"   →  [send→]    durable async send via the Restate log (one-way)

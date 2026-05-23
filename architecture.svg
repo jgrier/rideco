@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 860" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" font-family="'Segoe UI', system-ui, -apple-system, sans-serif">
   <defs>
     <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#0f172a"/>
@@ -10,17 +10,23 @@
       <stop offset="100%" stop-color="#475569"/>
     </linearGradient>
 
+    <linearGradient id="restateGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f2937"/>
+      <stop offset="50%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1f2937"/>
+    </linearGradient>
+
     <linearGradient id="smGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#3b82f6"/>
       <stop offset="100%" stop-color="#2563eb"/>
     </linearGradient>
 
-    <linearGradient id="edGrad" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="servGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#8b5cf6"/>
       <stop offset="100%" stop-color="#7c3aed"/>
     </linearGradient>
 
-    <linearGradient id="wfGrad" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="deGrad" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#f59e0b"/>
       <stop offset="100%" stop-color="#d97706"/>
     </linearGradient>
@@ -34,168 +40,151 @@
       <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.35"/>
     </filter>
 
-    <marker id="arrowCyan" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
-    </marker>
-    <marker id="arrowYellow" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="12" markerHeight="8" orient="auto-start-reverse">
+    <!-- Markers use userSpaceOnUse so they stay small regardless of stroke width. -->
+    <marker id="arrow" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
       <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24"/>
     </marker>
-    <marker id="arrowGray" viewBox="0 0 10 7" refX="10" refY="3.5" markerWidth="10" markerHeight="7" orient="auto-start-reverse">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/>
+    <marker id="arrowRev" viewBox="0 0 10 7" refX="1" refY="3.5" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto">
+      <polygon points="10 0, 0 3.5, 10 7" fill="#fbbf24"/>
+    </marker>
+    <marker id="arrowCyan" viewBox="0 0 10 7" refX="9" refY="3.5" markerWidth="8" markerHeight="6" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
     </marker>
   </defs>
 
   <!-- Background -->
-  <rect width="1200" height="860" rx="12" fill="url(#bgGrad)"/>
+  <rect width="1200" height="760" rx="12" fill="url(#bgGrad)"/>
 
   <!-- Title -->
-  <text x="600" y="32" text-anchor="middle" fill="#f1f5f9" font-size="22" font-weight="600">RideCo on Restate</text>
-  <text x="600" y="55" text-anchor="middle" fill="#94a3b8" font-size="14">Eight services across the four domains Restate covers — no Kafka, every write is durable on the Restate log</text>
+  <text x="600" y="28" text-anchor="middle" fill="#f1f5f9" font-size="22" font-weight="600">RideCo on Restate</text>
+  <text x="600" y="50" text-anchor="middle" fill="#94a3b8" font-size="13">Only external clients and Restate talk to workers. Workers never call each other directly — every call flows through the Restate log.</text>
 
-  <!-- External actors -->
-  <rect x="60"  y="85" width="140" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
-  <text x="130" y="120" text-anchor="middle" fill="white" font-size="14" font-weight="600">Rider app</text>
+  <!-- =========== EXTERNAL CLIENTS (top, above Restate) =========== -->
+  <text x="395" y="86" fill="#94a3b8" font-size="10" font-weight="700" letter-spacing="1.5">EXTERNAL CLIENTS</text>
 
-  <rect x="230" y="85" width="140" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
-  <text x="300" y="120" text-anchor="middle" fill="white" font-size="14" font-weight="600">Driver app</text>
+  <rect x="390" y="92" width="110" height="55" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="445" y="125" text-anchor="middle" fill="white" font-size="13" font-weight="600">Rider app</text>
 
-  <rect x="400" y="85" width="180" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
-  <text x="490" y="113" text-anchor="middle" fill="white" font-size="14" font-weight="600">Mapping providers</text>
-  <text x="490" y="130" text-anchor="middle" fill="#cbd5e1" font-size="11">weather · traffic · accidents</text>
+  <rect x="510" y="92" width="110" height="55" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="565" y="125" text-anchor="middle" fill="white" font-size="13" font-weight="600">Driver app</text>
 
-  <rect x="980" y="85" width="180" height="60" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
-  <text x="1070" y="113" text-anchor="middle" fill="white" font-size="14" font-weight="600">Human safety</text>
-  <text x="1070" y="130" text-anchor="middle" fill="white" font-size="14" font-weight="600">operator</text>
+  <rect x="630" y="92" width="150" height="55" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="705" y="116" text-anchor="middle" fill="white" font-size="12" font-weight="600">Mapping providers</text>
+  <text x="705" y="132" text-anchor="middle" fill="#cbd5e1" font-size="10">weather · traffic · accidents</text>
 
-  <!-- Restate cluster outline -->
-  <rect x="35" y="175" width="1130" height="555" rx="16" fill="#0b1220" stroke="#475569" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.95"/>
-  <text x="55" y="200" fill="#e2e8f0" font-size="14" font-weight="600">Restate cluster</text>
-  <text x="155" y="200" fill="#94a3b8" font-size="13">— control + data + Restate log in a single binary</text>
+  <rect x="790" y="92" width="120" height="55" rx="8" fill="url(#extGrad)" filter="url(#shadow)"/>
+  <text x="850" y="116" text-anchor="middle" fill="white" font-size="12" font-weight="600">Human safety</text>
+  <text x="850" y="132" text-anchor="middle" fill="white" font-size="12" font-weight="600">operator</text>
 
-  <!-- ====== Stateful microservices band ====== -->
-  <rect x="55" y="220" width="1090" height="130" rx="10" fill="#1e3a8a" fill-opacity="0.18" stroke="#3b82f6" stroke-opacity="0.35" stroke-width="1"/>
-  <text x="75" y="240" fill="#93c5fd" font-size="11" font-weight="700" letter-spacing="1.5">STATEFUL MICROSERVICES</text>
+  <!-- Arrows external → Restate top edge (y=190) -->
+  <!-- Rider, Driver: bidirectional yellow (sync application flow) -->
+  <!-- Mapping, Operator: one-way cyan (pure event publishers) -->
+  <line x1="445" y1="147" x2="445" y2="190" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
+  <line x1="565" y1="147" x2="565" y2="190" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
+  <line x1="705" y1="147" x2="705" y2="190" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <line x1="850" y1="147" x2="850" y2="190" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
 
-  <rect x="85" y="258" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
-  <text x="157.5" y="284" text-anchor="middle" fill="white" font-size="14" font-weight="600">Trip</text>
-  <text x="157.5" y="306" text-anchor="middle" fill="#dbeafe" font-size="11">VO / trip_id</text>
-  <text x="157.5" y="322" text-anchor="middle" fill="#bfdbfe" font-size="10">lifecycle state machine</text>
+  <!-- =========== LEFT COLUMN — STATEFUL MICROSERVICES =========== -->
+  <text x="55" y="185" fill="#93c5fd" font-size="10" font-weight="700" letter-spacing="1.5">STATEFUL MICROSERVICES</text>
+  <rect x="40" y="190" width="270" height="475" rx="10" fill="#1e3a8a" fill-opacity="0.10" stroke="#3b82f6" stroke-opacity="0.30" stroke-width="1"/>
 
-  <rect x="250" y="258" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
-  <text x="322.5" y="284" text-anchor="middle" fill="white" font-size="14" font-weight="600">Offers</text>
-  <text x="322.5" y="306" text-anchor="middle" fill="#dbeafe" font-size="11">stateless service</text>
-  <text x="322.5" y="322" text-anchor="middle" fill="#bfdbfe" font-size="10">offer synthesis</text>
+  <rect x="55" y="205" width="240" height="100" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="175" y="232" text-anchor="middle" fill="white" font-size="14" font-weight="600">Trip</text>
+  <text x="175" y="252" text-anchor="middle" fill="#dbeafe" font-size="11">VO / trip_id</text>
+  <text x="175" y="272" text-anchor="middle" fill="#bfdbfe" font-size="10">lifecycle state machine</text>
+  <text x="175" y="289" text-anchor="middle" fill="#bfdbfe" font-size="10">suspends on awakeable for match</text>
 
-  <rect x="415" y="258" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
-  <text x="487.5" y="284" text-anchor="middle" fill="white" font-size="14" font-weight="600">ETA</text>
-  <text x="487.5" y="306" text-anchor="middle" fill="#dbeafe" font-size="11">stateless service</text>
-  <text x="487.5" y="322" text-anchor="middle" fill="#bfdbfe" font-size="10">arrival prediction</text>
+  <rect x="55" y="320" width="240" height="100" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="175" y="347" text-anchor="middle" fill="white" font-size="14" font-weight="600">Offers</text>
+  <text x="175" y="367" text-anchor="middle" fill="#dbeafe" font-size="11">stateless service</text>
+  <text x="175" y="387" text-anchor="middle" fill="#bfdbfe" font-size="10">synthesizes ETA + Pricing</text>
+  <text x="175" y="404" text-anchor="middle" fill="#bfdbfe" font-size="10">into a ranked offer</text>
 
-  <rect x="580" y="258" width="145" height="75" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
-  <text x="652.5" y="284" text-anchor="middle" fill="white" font-size="14" font-weight="600">Pricing</text>
-  <text x="652.5" y="306" text-anchor="middle" fill="#dbeafe" font-size="11">VO / region</text>
-  <text x="652.5" y="322" text-anchor="middle" fill="#bfdbfe" font-size="10">surge multiplier</text>
-  <text x="720" y="273" text-anchor="end" fill="#fde68a" font-size="10" font-weight="700">↻ 10s</text>
+  <rect x="55" y="435" width="240" height="100" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="175" y="462" text-anchor="middle" fill="white" font-size="14" font-weight="600">ETA</text>
+  <text x="175" y="482" text-anchor="middle" fill="#dbeafe" font-size="11">stateless service</text>
+  <text x="175" y="502" text-anchor="middle" fill="#bfdbfe" font-size="10">arrival prediction</text>
+  <text x="175" y="519" text-anchor="middle" fill="#bfdbfe" font-size="10">reads region features</text>
 
-  <!-- ====== Event-driven band ====== -->
-  <rect x="55" y="370" width="1090" height="130" rx="10" fill="#4c1d95" fill-opacity="0.18" stroke="#8b5cf6" stroke-opacity="0.35" stroke-width="1"/>
-  <text x="75" y="390" fill="#c4b5fd" font-size="11" font-weight="700" letter-spacing="1.5">EVENT-DRIVEN</text>
+  <rect x="55" y="550" width="240" height="100" rx="8" fill="url(#smGrad)" filter="url(#shadow)"/>
+  <text x="175" y="577" text-anchor="middle" fill="white" font-size="14" font-weight="600">Pricing</text>
+  <text x="175" y="597" text-anchor="middle" fill="#dbeafe" font-size="11">VO / region</text>
+  <text x="175" y="617" text-anchor="middle" fill="#bfdbfe" font-size="10">surge multiplier</text>
+  <text x="175" y="634" text-anchor="middle" fill="#bfdbfe" font-size="10">↻ refresh every 10s</text>
 
-  <rect x="85" y="408" width="165" height="75" rx="8" fill="url(#edGrad)" filter="url(#shadow)"/>
-  <text x="167.5" y="434" text-anchor="middle" fill="white" font-size="14" font-weight="600">Locations</text>
-  <text x="167.5" y="456" text-anchor="middle" fill="#ede9fe" font-size="11">VO / driver_id</text>
-  <text x="167.5" y="472" text-anchor="middle" fill="#ddd6fe" font-size="10">GPS smoothing + state</text>
+  <!-- Bidirectional arrows: Restate ↔ left workers -->
+  <line x1="295" y1="255" x2="350" y2="255" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
+  <line x1="295" y1="370" x2="350" y2="370" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
+  <line x1="295" y1="485" x2="350" y2="485" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
+  <line x1="295" y1="600" x2="350" y2="600" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
 
-  <rect x="945" y="408" width="165" height="75" rx="8" fill="url(#edGrad)" filter="url(#shadow)"/>
-  <text x="1027.5" y="434" text-anchor="middle" fill="white" font-size="14" font-weight="600">Features</text>
-  <text x="1027.5" y="456" text-anchor="middle" fill="#ede9fe" font-size="11">VO / entity:id:name</text>
-  <text x="1027.5" y="472" text-anchor="middle" fill="#ddd6fe" font-size="10">online feature store</text>
+  <!-- =========== RESTATE (center, smaller) =========== -->
+  <rect x="355" y="190" width="490" height="380" rx="12" fill="url(#restateGrad)" stroke="#475569" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="368" y="203" width="464" height="354" rx="8" fill="none" stroke="#3b82f6" stroke-opacity="0.25" stroke-width="1.5" stroke-dasharray="4,4"/>
 
-  <!-- ====== Workflow band ====== -->
-  <rect x="55" y="520" width="525" height="130" rx="10" fill="#78350f" fill-opacity="0.18" stroke="#f59e0b" stroke-opacity="0.35" stroke-width="1"/>
-  <text x="75" y="540" fill="#fcd34d" font-size="11" font-weight="700" letter-spacing="1.5">WORKFLOW</text>
+  <text x="600" y="245" text-anchor="middle" fill="#f1f5f9" font-size="26" font-weight="700" letter-spacing="3">RESTATE</text>
+  <text x="600" y="271" text-anchor="middle" fill="#94a3b8" font-size="12">ingress · durable log · invocation dispatcher · state</text>
 
-  <rect x="175" y="558" width="240" height="75" rx="8" fill="url(#wfGrad)" filter="url(#shadow)"/>
-  <text x="295" y="584" text-anchor="middle" fill="white" font-size="14" font-weight="600">Dispatch</text>
-  <text x="295" y="606" text-anchor="middle" fill="#fef3c7" font-size="11">VO / region</text>
-  <text x="295" y="622" text-anchor="middle" fill="#fde68a" font-size="10">batched matching round</text>
-  <text x="410" y="573" text-anchor="end" fill="#fde68a" font-size="10" font-weight="700">↻ 5s</text>
+  <text x="600" y="318" text-anchor="middle" fill="#cbd5e1" font-size="12">Every call — sync or `/send` — is journaled here</text>
+  <text x="600" y="335" text-anchor="middle" fill="#cbd5e1" font-size="12">before any worker sees it.</text>
 
-  <!-- ====== AI agent band ====== -->
-  <rect x="605" y="520" width="540" height="130" rx="10" fill="#831843" fill-opacity="0.20" stroke="#ec4899" stroke-opacity="0.35" stroke-width="1"/>
-  <text x="625" y="540" fill="#f9a8d4" font-size="11" font-weight="700" letter-spacing="1.5">AI AGENT</text>
+  <text x="600" y="370" text-anchor="middle" fill="#cbd5e1" font-size="12">Restate invokes the worker over HTTP.</text>
+  <text x="600" y="387" text-anchor="middle" fill="#cbd5e1" font-size="12">Workers never talk to each other directly.</text>
 
-  <rect x="745" y="558" width="280" height="75" rx="8" fill="url(#aiGrad)" filter="url(#shadow)"/>
-  <text x="885" y="584" text-anchor="middle" fill="white" font-size="14" font-weight="600">SafetyAgent</text>
-  <text x="885" y="606" text-anchor="middle" fill="#fce7f3" font-size="11">VO / trip_id</text>
-  <text x="885" y="622" text-anchor="middle" fill="#fbcfe8" font-size="10">per-trip monitor · awakeable · ctx.run</text>
-  <text x="1020" y="573" text-anchor="end" fill="#fbcfe8" font-size="10" font-weight="700">↻ 8s</text>
+  <text x="600" y="422" text-anchor="middle" fill="#cbd5e1" font-size="12">Awakeables let a handler suspend on a token</text>
+  <text x="600" y="439" text-anchor="middle" fill="#cbd5e1" font-size="12">and resume when another handler resolves it.</text>
 
-  <!-- ====== ARROWS ====== -->
+  <text x="600" y="500" text-anchor="middle" fill="#94a3b8" font-size="11" font-style="italic">workers are stateless processes — state, durability,</text>
+  <text x="600" y="517" text-anchor="middle" fill="#94a3b8" font-size="11" font-style="italic">retries, ordering, scheduling all live in here</text>
 
-  <!-- External — sync requests -->
-  <!-- Rider -> Trip (sync) -->
-  <path d="M 130 145 L 130 215 Q 130 240 142 258" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
-  <text x="86" y="200" fill="#67e8f9" font-size="11">request_ride</text>
+  <!-- =========== RIGHT COLUMN (split into Serving + Durable Execution) =========== -->
 
-  <!-- Driver -> Locations.set_status (sync) -->
-  <path d="M 280 145 L 280 380 Q 280 405 250 410" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
-  <text x="288" y="240" fill="#67e8f9" font-size="11">set_status</text>
+  <!-- Sub-band 1: EVENT-DRIVEN APPS / SERVING -->
+  <text x="905" y="185" fill="#c4b5fd" font-size="10" font-weight="700" letter-spacing="1.5">EVENT-DRIVEN APPS / SERVING</text>
+  <rect x="890" y="190" width="270" height="230" rx="10" fill="#4c1d95" fill-opacity="0.10" stroke="#8b5cf6" stroke-opacity="0.30" stroke-width="1"/>
 
-  <!-- Operator -> SafetyAgent (sync, awakeable resolve) -->
-  <path d="M 1070 145 L 1070 530 Q 1070 558 1010 570" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
-  <text x="1078" y="320" fill="#67e8f9" font-size="11">resolve</text>
-  <text x="1078" y="334" fill="#67e8f9" font-size="11">awakeable</text>
+  <rect x="905" y="205" width="240" height="100" rx="8" fill="url(#servGrad)" filter="url(#shadow)"/>
+  <text x="1025" y="232" text-anchor="middle" fill="white" font-size="14" font-weight="600">Locations</text>
+  <text x="1025" y="252" text-anchor="middle" fill="#ede9fe" font-size="11">VO / driver_id</text>
+  <text x="1025" y="272" text-anchor="middle" fill="#ddd6fe" font-size="10">ingests GPS + status</text>
+  <text x="1025" y="289" text-anchor="middle" fill="#ddd6fe" font-size="10">serves driver position</text>
 
-  <!-- External — durable async sends -->
-  <!-- Driver -> Locations.ping (durable async send, high-frequency) -->
-  <path d="M 320 145 L 320 405" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-  <text x="330" y="270" fill="#fcd34d" font-size="11" font-weight="600">ping</text>
+  <rect x="905" y="320" width="240" height="85" rx="8" fill="url(#servGrad)" filter="url(#shadow)"/>
+  <text x="1025" y="345" text-anchor="middle" fill="white" font-size="14" font-weight="600">Features</text>
+  <text x="1025" y="365" text-anchor="middle" fill="#ede9fe" font-size="11">VO / entity:id:name</text>
+  <text x="1025" y="383" text-anchor="middle" fill="#ddd6fe" font-size="10">ingests feature updates</text>
+  <text x="1025" y="398" text-anchor="middle" fill="#ddd6fe" font-size="10">serves on read</text>
 
-  <!-- Mapping providers -> Features (durable async send — replaces Kafka) -->
-  <path d="M 490 145 Q 490 280 945 430" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-  <text x="640" y="200" fill="#fcd34d" font-size="11" font-weight="600">Features.set/send</text>
-  <text x="640" y="216" fill="#94a3b8" font-size="10" font-style="italic">(durable from acknowledgement — same job a Kafka topic would do)</text>
+  <!-- Sub-band 2: DURABLE EXECUTION -->
+  <text x="905" y="445" fill="#fcd34d" font-size="10" font-weight="700" letter-spacing="1.5">DURABLE EXECUTION</text>
+  <rect x="890" y="450" width="270" height="215" rx="10" fill="#78350f" fill-opacity="0.10" stroke="#f59e0b" stroke-opacity="0.30" stroke-width="1"/>
 
-  <!-- Internal — sync RPC chain -->
-  <line x1="230" y1="295" x2="247" y2="295" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
-  <line x1="395" y1="295" x2="412" y2="295" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
-  <path d="M 395 288 Q 487 235 580 288" fill="none" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <rect x="905" y="465" width="240" height="85" rx="8" fill="url(#deGrad)" filter="url(#shadow)"/>
+  <text x="1025" y="490" text-anchor="middle" fill="white" font-size="14" font-weight="600">Dispatch</text>
+  <text x="1025" y="510" text-anchor="middle" fill="#fef3c7" font-size="11">VO / region</text>
+  <text x="1025" y="527" text-anchor="middle" fill="#fde68a" font-size="10">batched matching · ↻ 5s</text>
+  <text x="1025" y="542" text-anchor="middle" fill="#fde68a" font-size="10">resolves trip awakeables</text>
 
-  <!-- Internal — durable async sends -->
-  <!-- Trip -> Dispatch -->
-  <path d="M 157 333 Q 157 430 240 558" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-  <text x="100" y="425" fill="#fcd34d" font-size="11" font-weight="600">enqueue_trip</text>
+  <rect x="905" y="565" width="240" height="85" rx="8" fill="url(#aiGrad)" filter="url(#shadow)"/>
+  <text x="1025" y="590" text-anchor="middle" fill="white" font-size="14" font-weight="600">SafetyAgent</text>
+  <text x="1025" y="610" text-anchor="middle" fill="#fce7f3" font-size="11">VO / trip_id · AI Agent</text>
+  <text x="1025" y="627" text-anchor="middle" fill="#fbcfe8" font-size="10">monitor · awakeable · ↻ 8s</text>
+  <text x="1025" y="642" text-anchor="middle" fill="#fbcfe8" font-size="10">ctx.run for LLM (mocked)</text>
 
-  <!-- Dispatch -> Trip (return) -->
-  <path d="M 350 558 Q 270 430 180 333" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-  <text x="265" y="440" fill="#fcd34d" font-size="11" font-weight="600">assign_driver</text>
+  <!-- One-way arrows: Restate → right workers -->
+  <line x1="845" y1="255" x2="900" y2="255" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <line x1="845" y1="362" x2="900" y2="362" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <line x1="845" y1="507" x2="900" y2="507" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <line x1="845" y1="607" x2="900" y2="607" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
 
-  <!-- Locations -> Dispatch -->
-  <path d="M 220 483 Q 240 520 260 558" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-  <text x="225" y="515" fill="#fcd34d" font-size="11" font-weight="600">register_driver</text>
+  <!-- =========== LEGEND =========== -->
+  <g transform="translate(40, 690)">
+    <text x="0" y="0" fill="#cbd5e1" font-size="11" font-weight="700" letter-spacing="1.5">FLOW</text>
 
-  <!-- Trip -> SafetyAgent -->
-  <path d="M 230 310 Q 500 310 745 575" fill="none" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-  <text x="490" y="305" fill="#fcd34d" font-size="11" font-weight="600">start_monitoring</text>
+    <line x1="0" y1="20" x2="60" y2="20" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrowRev)"/>
+    <text x="75" y="24" fill="#e2e8f0" font-size="11">sync request flow — caller may await the response; both call/await and send/forget go through the Restate log</text>
 
-  <!-- Sync feature reads (combined visual cue, light cyan) -->
-  <path d="M 560 295 Q 750 310 945 440" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.55" marker-end="url(#arrowCyan)"/>
-  <path d="M 725 295 Q 850 340 945 420" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.55" marker-end="url(#arrowCyan)"/>
-  <path d="M 1010 558 Q 1080 510 1110 485" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-opacity="0.55" marker-end="url(#arrowCyan)"/>
-  <text x="945" y="385" text-anchor="end" fill="#67e8f9" font-size="11" font-style="italic">reads from Features</text>
-
-  <!-- ====== LEGEND ====== -->
-  <g transform="translate(60, 790)">
-    <text x="0" y="-5" fill="#cbd5e1" font-size="12" font-weight="700" letter-spacing="1.5">FLOW LEGEND</text>
-
-    <line x1="0" y1="15" x2="60" y2="15" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
-    <text x="75" y="19" fill="#e2e8f0" font-size="12">sync request — caller awaits response</text>
-
-    <line x1="380" y1="15" x2="440" y2="15" stroke="#fbbf24" stroke-width="3" marker-end="url(#arrowYellow)"/>
-    <text x="455" y="19" fill="#e2e8f0" font-size="12">durable async send — fire-and-forget into the Restate log</text>
-
-    <text x="950" y="19" fill="#fde68a" font-size="12" font-weight="700">↻ Ns</text>
-    <text x="985" y="19" fill="#e2e8f0" font-size="12">self-send cadence (no scheduler)</text>
+    <line x1="0" y1="44" x2="60" y2="44" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+    <text x="75" y="48" fill="#e2e8f0" font-size="11">event stream — receiver is event-driven; caller never awaits. Sync `get` reads for serving aren't drawn.</text>
   </g>
 </svg>

@@ -21,11 +21,11 @@ echo "════════════════════════�
 echo " RideCo demo — TERMINAL 1 (the show)"
 echo "════════════════════════════════════════════════════════════════"
 echo
-echo " This terminal will host hypercorn — the Python process serving"
-echo " all 8 Restate services. Its log scrolls below as the demo runs;"
+echo " This terminal hosts hypercorn — the Python process serving all"
+echo " 8 Restate services. Its log scrolls below as the demo runs;"
 echo " every cross-service hop is tagged [sync→] / [send→] / [self→]"
-echo " so the audience can see sync RPC vs durable async send vs cadence"
-echo " self-send at a glance."
+echo " so sync RPC, durable async send, and delayed-call cadence are"
+echo " each immediately visible."
 echo
 echo " Restate UI for visual confirmation:  http://localhost:9070"
 echo
