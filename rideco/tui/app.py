@@ -154,24 +154,27 @@ def _build_region_cells(snap: dict) -> RegionCells:
 
 
 class RegionsTable(DataTable):
+    # (key, label, width). width=None auto-sizes; explicit widths keep
+    # rendered cells from getting truncated when the cell content (Rich
+    # Text with markup) is wider than the header.
     COLS = [
-        ("region", "Region"),
-        ("active", "Active?"),
-        ("halts", "Halts"),
-        ("risk", "Risk"),
-        ("epoch", "Epoch"),
-        ("idle", "Idle"),
-        ("pending", "Pending"),
-        ("in_flight", "In-flight"),
-        ("done", "Done"),
-        ("awakeable", "Awakeable"),
+        ("region", "Region", 7),
+        ("active", "Active?", 9),
+        ("halts", "Halts", 6),
+        ("risk", "Risk", 6),
+        ("epoch", "Epoch", 6),
+        ("idle", "Idle", 5),
+        ("pending", "Pending", 8),
+        ("in_flight", "In-flight", 10),
+        ("done", "Done", 6),
+        ("awakeable", "Awakeable", None),
     ]
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
         self.zebra_stripes = True
-        for key, label in self.COLS:
-            self.add_column(label, key=key)
+        for key, label, width in self.COLS:
+            self.add_column(label, key=key, width=width)
         for region in all_regions():
             self.add_row(region, "", "", "", "", "", "", "", "", "", key=region)
 
@@ -189,19 +192,22 @@ class RegionsTable(DataTable):
 
 
 class ServicesTable(DataTable):
+    # (key, label, width). region_safety_agent is the longest service
+    # name at 19 chars; "● running" is 9. Explicit widths so neither gets
+    # truncated.
     COLS = [
-        ("name", "Service"),
-        ("port", "Port"),
-        ("status", "Status"),
-        ("pid", "PID"),
-        ("last_log", "Last log line"),
+        ("name", "Service", 22),
+        ("port", "Port", 6),
+        ("status", "Status", 12),
+        ("pid", "PID", 8),
+        ("last_log", "Last log line", None),
     ]
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
         self.zebra_stripes = True
-        for key, label in self.COLS:
-            self.add_column(label, key=key)
+        for key, label, width in self.COLS:
+            self.add_column(label, key=key, width=width)
         for name, port in SERVICES:
             self.add_row(name, str(port), "", "", "", key=name)
 
@@ -216,18 +222,23 @@ class ServicesTable(DataTable):
 
 HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3d — full command surface)[/dim]
 
+[bold cyan]Navigation[/bold cyan]
+  [yellow]Tab[/yellow]    move focus between the Regions and Services tables
+         (the row cursor follows whichever table has focus)
+  [yellow]↑/↓[/yellow]   select rows in the focused table
+
 [bold cyan]Quit / help / refresh[/bold cyan]
   [yellow]q[/yellow]    quit (tears everything down)
   [yellow]?[/yellow]    show this help
   [yellow]r[/yellow]    refresh now
 
-[bold cyan]Regions table  ([italic]↑/↓ to select a region[/italic])[/bold cyan]
+[bold cyan]On the Regions table[/bold cyan]
   [yellow]s[/yellow]    spike the selected region (25s of unsafe features
         — the RegionSafetyAgent will halt it)
   [yellow]a[/yellow]    approve the selected region's pending awakeable
         (resumes dispatch)
 
-[bold cyan]Services table  ([italic]↑/↓ to select; bottom pane tails its log[/italic])[/bold cyan]
+[bold cyan]On the Services table  ([italic]bottom pane tails the selected service's log[/italic])[/bold cyan]
   [yellow]k[/yellow]    kill the selected service process
   [yellow]b[/yellow]    boot the selected service (re-registers with Restate)
 
