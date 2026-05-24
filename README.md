@@ -293,6 +293,8 @@ red, Active flip to HALTED, Pending climb, the awakeable populate. After
 you approve, Active goes back to green, Pending drains, Done resumes
 climbing.
 
+![watch-regions dashboard mid-demo, SF halted](watch-regions.svg)
+
 ## Poke at the running system
 
 The dashboard in T3 is one window into the running system; there are
