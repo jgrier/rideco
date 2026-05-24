@@ -37,12 +37,11 @@ countdown() {
   printf "\r   done           \n"
 }
 
-# Background sim PIDs (killed on exit)
-RIDER_PID=""; DRIVER_PID=""; MAPPING_PID=""
+# On exit, ask SimControl to pause every rider/driver/mapping VO so
+# traffic stops cleanly. (The VOs persist in Restate; pause is enough.)
 cleanup_sims() {
-  for pid in "$RIDER_PID" "$DRIVER_PID" "$MAPPING_PID"; do
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-  done
+  curl -s -X POST http://localhost:8080/SimControl/global/stop_all \
+    -H 'Content-Type: application/json' -d '{}' > /dev/null 2>&1 || true
 }
 trap cleanup_sims EXIT
 
@@ -75,23 +74,15 @@ pause
 # ───── PHASE 1 ───────────────────────────────────────────────────────
 section "PHASE 1 — system is alive"
 echo
-echo " Starting three background sims that play the role of external"
-echo " actors:"
-echo "   driver-sim   — drivers online + pinging GPS"
-echo "   mapping-sim  — weather + accident feeds (also kicks off the"
-echo "                  Pricing.refresh and RegionSafetyAgent.tick loops)"
-echo "   rider-sim    — trip requests across all regions"
+echo " The sims are Restate services too — DriverSim, RiderSim, MappingSim"
+echo " per-key VOs, fanned out by SimControl. One call to start_all kicks"
+echo " off 16 drivers, 3 riders, and a per-region mapping feed. Same"
+echo " primitives the app uses; they just happen to play external roles."
 pause
 
-echo " starting sims..."
-.venv/bin/python -m rideco.sim.driver --drivers 16 > /tmp/rideco-driver-sim.log 2>&1 &
-DRIVER_PID=$!
-.venv/bin/python -m rideco.sim.mapping_events --interval 12 > /tmp/rideco-mapping-sim.log 2>&1 &
-MAPPING_PID=$!
-sleep 3
-.venv/bin/python -m rideco.sim.rider --riders 3 --rate 0.1 > /tmp/rideco-rider-sim.log 2>&1 &
-RIDER_PID=$!
-
+run curl -s -X POST http://localhost:8080/SimControl/global/start_all \
+  -H 'Content-Type: application/json' -d '{}'
+echo
 echo " letting the system settle..."
 countdown 15
 echo
@@ -171,4 +162,4 @@ cat <<'EOF'
    T2:  ./scripts/demo-t2.sh
 EOF
 echo
-echo " (background sims will be killed when this terminal exits)"
+echo " (sims will be paused via SimControl.stop_all when this terminal exits)"

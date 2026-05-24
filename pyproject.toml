@@ -10,11 +10,6 @@ dependencies = [
   "rich>=13.7",
 ]
 
-[project.scripts]
-rideco-sim-rider = "rideco.sim.rider:main"
-rideco-sim-driver = "rideco.sim.driver:main"
-rideco-sim-mapping = "rideco.sim.mapping_events:main"
-
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

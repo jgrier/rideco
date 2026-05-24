@@ -17,10 +17,15 @@ from rideco.services.locations import locations
 from rideco.services.offers import offers
 from rideco.services.pricing import pricing
 from rideco.services.region_safety_agent import region_safety_agent
+from rideco.services.sim_control import sim_control
+from rideco.services.sim_driver import driver_sim
+from rideco.services.sim_mapping import mapping_sim
+from rideco.services.sim_rider import rider_sim
 from rideco.services.trip import trip
 
 
 app = restate.app(services=[
+    # App
     trip,
     offers,
     dispatch,
@@ -29,4 +34,9 @@ app = restate.app(services=[
     eta,
     features,
     region_safety_agent,
+    # Sims (load generators, also implemented on Restate)
+    rider_sim,
+    driver_sim,
+    mapping_sim,
+    sim_control,
 ])
