@@ -107,3 +107,7 @@ async def note_supply(ctx: restate.ObjectContext, payload: dict) -> dict:
     supply = ((await ctx.get("supply_count", type_hint=int)) or 0) + delta
     ctx.set("supply_count", max(supply, 0))
     return {"region": ctx.key(), "supply_count": supply}
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[pricing])

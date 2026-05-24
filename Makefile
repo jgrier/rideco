@@ -20,15 +20,14 @@ restate-logs:
 	docker compose logs -f restate
 
 serve:
-	$(PYTHON) -m hypercorn --config hypercorn-config.toml rideco.services.app:app
+	./scripts/serve-all.sh
 
-# Stop hypercorn reliably (pkill sometimes fails on macOS for forked children).
+# Stop every per-service hypercorn (9080-9091).
 stop:
-	@PIDS=$$(lsof -nP -iTCP:9080 -sTCP:LISTEN -t); \
-	if [ -z "$$PIDS" ]; then echo "9080 already free"; else echo "killing $$PIDS"; kill -9 $$PIDS; fi
+	./scripts/stop.sh
 
 register:
-	restate -y deployments register --force $(DEPLOYMENT)
+	./scripts/register-all.sh
 
 register-kafka:
 	# Create the only Kafka subscription in RideCo: mapping_events topic →

@@ -53,3 +53,7 @@ async def get(ctx: restate.ObjectSharedContext, payload: dict | None = None) -> 
     if value is None:
         return {"key": ctx.key(), "value": default, "version": 0, "is_default": True}
     return {"key": ctx.key(), "value": value, "version": version, "is_default": False}
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[features])

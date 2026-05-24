@@ -219,3 +219,7 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
         "matched": len(assignments),
         "carried_over": len(leftover),
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[dispatch])

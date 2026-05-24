@@ -94,3 +94,7 @@ async def get_position(ctx: restate.ObjectSharedContext, _: dict | None = None) 
         "status": (await ctx.get("status", type_hint=str)) or DRIVER_OFFLINE,
         "region": await ctx.get("region", type_hint=str),
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[locations])

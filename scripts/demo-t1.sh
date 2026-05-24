@@ -21,11 +21,11 @@ echo "════════════════════════�
 echo " RideCo demo — TERMINAL 1 (the show)"
 echo "════════════════════════════════════════════════════════════════"
 echo
-echo " This terminal hosts hypercorn — the Python process serving all"
-echo " 8 Restate services. Its log scrolls below as the demo runs;"
-echo " every cross-service hop is tagged [sync→] / [send→] / [self→]"
-echo " so sync RPC, durable async send, and delayed-call cadence are"
-echo " each immediately visible."
+echo " This terminal hosts twelve hypercorn processes — one per Restate"
+echo " service — and interleaves their logs (each line prefixed with"
+echo " [service-name]). Every cross-service hop is tagged [sync→] /"
+echo " [send→] / [self→] so sync RPC, durable async send, and delayed-call"
+echo " cadence are each immediately visible."
 echo
 echo " Restate UI for visual confirmation:  http://localhost:9070"
 echo
@@ -34,9 +34,9 @@ echo
 MODE="${1:-}"
 if [ -z "$MODE" ]; then
   echo " Pick a mode:"
-  echo "   [f]  fresh start — wipe Restate state, start hypercorn"
-  echo "   [r]  restart only — keep state, just (re)start hypercorn"
-  echo "        (use this after editing rideco/services/eta.py in Phase 3)"
+  echo "   [f]  fresh start — wipe Restate state, start all services"
+  echo "   [r]  restart only — keep state, just (re)start the services"
+  echo "        (use this after editing a service file)"
   echo
   read -p " Choice [f/r]: " choice
   case "$choice" in
@@ -61,14 +61,14 @@ if [ "$MODE" = "fresh" ]; then
   echo "    ready."
 
   echo
-  echo " ── (3/3) start hypercorn — your log will scroll below ──"
+  echo " ── (3/3) start the 12 services — interleaved log scrolls below ──"
   echo "    (in Terminal 2 now: ./scripts/demo-t2.sh)"
   pause
 fi
 
 if [ "$MODE" = "restart" ]; then
   echo
-  echo " ── kill any lingering hypercorn, then start fresh ──"
+  echo " ── kill any lingering service processes, then start fresh ──"
   pause
   "$SCRIPT_DIR/stop.sh"
 fi

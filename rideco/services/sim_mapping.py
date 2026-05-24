@@ -132,3 +132,7 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
         "last_weather": await ctx.get("last_weather", type_hint=str),
         "last_accidents": await ctx.get("last_accidents", type_hint=float),
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[mapping_sim])

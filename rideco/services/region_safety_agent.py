@@ -199,3 +199,7 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
         "last_verdict": await ctx.get("last_verdict", type_hint=str),
         "pending_awakeable": await ctx.get("pending_awakeable", type_hint=str),
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[region_safety_agent])

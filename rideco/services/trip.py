@@ -190,3 +190,7 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
         "epoch_id": await ctx.get("epoch_id", type_hint=int),
         "pending_match_awakeable": await ctx.get("pending_match_awakeable", type_hint=str),
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[trip])

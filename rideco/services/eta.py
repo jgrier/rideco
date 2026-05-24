@@ -75,3 +75,7 @@ async def estimate(ctx: restate.Context, payload: dict) -> dict:
         "reliability_score": reliability,
         "route_summary": f"direct via {region}",
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[eta])

@@ -136,3 +136,7 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
         "lng": await ctx.get("lng", type_hint=float),
         "pings_sent": (await ctx.get("pings_sent", type_hint=int)) or 0,
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[driver_sim])

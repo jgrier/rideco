@@ -340,7 +340,10 @@ runs; every cross-service hop is tagged `[sync→]` / `[send→]` / `[self→]`.
 ./scripts/demo-t1.sh fresh
 ```
 
-Pauses for ENTER, wipes Restate state, brings up Restate, starts hypercorn.
+Pauses for ENTER, wipes Restate state, brings up Restate, then launches
+all twelve services as separate hypercorn processes (one per service,
+ports 9080–9091). Their logs interleave in this terminal with each line
+tagged `[service-name]`.
 
 **Terminal 2** — guided walkthrough. Three phases, ENTER between every step.
 
@@ -439,7 +442,7 @@ restate services list                          # all registered services
 
 **Things worth trying.**
 
-- Stop hypercorn mid-trip (`./scripts/stop.sh`), wait, restart with `./scripts/demo-t1.sh restart`. The pending `Trip.confirm` invocations resume from where they suspended; the matching loop picks back up. No state lost.
+- Stop one service mid-trip (find its PID in the `[service-name]` lines and kill it, or just `./scripts/stop.sh` to wipe everything), wait, restart with `./scripts/demo-t1.sh restart`. The pending `Trip.confirm` invocations resume from where they suspended; the matching loop picks back up. No state lost.
 - `./scripts/spike-region.sh NYC` while SF is already halted. Two regions queued; one human verdict per region to drain.
 - Write a feature directly (`./scripts/set-feature.sh SF accident_density 0.9`) and watch the next `RegionSafetyAgent[SF].tick` catch it.
 - In the Web UI, find a `RegionSafetyAgent.tick` invocation in *suspended* state, click through to its journal — every step is recorded, including the awakeable it's waiting on.
@@ -452,7 +455,9 @@ restate services list                          # all registered services
 | `./scripts/demo-t2.sh` | Terminal 2 guided 5-phase walkthrough |
 | `./scripts/register.sh` | Register the Python deployment with Restate |
 | `./scripts/reset.sh` | Wipe Restate state and restart the container |
-| `./scripts/stop.sh` | Stop hypercorn reliably |
+| `./scripts/serve-all.sh` | Launch all 12 services as separate hypercorn processes (foreground, Ctrl+C tears all down) |
+| `./scripts/register-all.sh` | Register all 12 deployments with Restate |
+| `./scripts/stop.sh` | Kill anything listening on 9080–9091 |
 | `./scripts/setup-region.sh <region>` | Initialize a region: clear features + one idle driver |
 | `./scripts/make-trip.sh <trip_id> <region>` | Rider request + confirm (sync; confirm waits for match) |
 | `./scripts/make-trip-send.sh <trip_id> <region>` | Same but fire-and-forget request_ride |
@@ -481,7 +486,7 @@ restate services list                          # all registered services
 rideco/
 ├── architecture.svg           # diagram, embedded above
 ├── docker-compose.yml         # restate-server 1.6.2 — the whole stack
-├── hypercorn-config.toml      # ASGI binds :9080
+├── hypercorn-config.toml      # ASGI defaults (per-service --bind passes overrides)
 ├── pyproject.toml             # restate_sdk[serde], hypercorn, httpx, rich
 ├── Makefile                   # serve, register, stop
 ├── scripts/                   # demo scripts — see Scripts reference above
@@ -494,5 +499,8 @@ rideco/
 │   └── sim/                   # watch_regions — live dashboard (external)
 ```
 
-All twelve services run in one Python process for the demo. Each is
-independent and could be split into its own process — Restate doesn't care.
+Each service runs as its own hypercorn process on its own port
+(`serve-all.sh` spawns all twelve). They never call each other directly —
+every cross-service hop goes through Restate, so killing or restarting
+one process has zero effect on the others. The TUI in development takes
+this one step further by owning the per-service lifecycle.

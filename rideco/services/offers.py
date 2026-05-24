@@ -82,3 +82,7 @@ async def generate(ctx: restate.Context, payload: dict) -> dict:
         "selected": selected,
         "multiplier": price["multiplier"],
     }
+
+
+# Standalone ASGI app — one Restate deployment per service.
+app = restate.app(services=[offers])
