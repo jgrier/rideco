@@ -36,4 +36,4 @@ echo "   status: completed"
 echo
 echo " Verify:"
 echo "   ./scripts/show-trip.sh $TRIP_ID    # status=completed"
-echo "   ./scripts/show-agent.sh $TRIP_ID   # active=false (after next tick)"
+echo "   ./scripts/show-trip.sh $TRIP_ID   # active=false (after next tick)"

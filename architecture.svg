@@ -166,10 +166,10 @@
   <text x="1025" y="542" text-anchor="middle" fill="#fde68a" font-size="10">resolves trip awakeables</text>
 
   <rect x="905" y="565" width="240" height="85" rx="8" fill="url(#aiGrad)" filter="url(#shadow)"/>
-  <text x="1025" y="590" text-anchor="middle" fill="white" font-size="14" font-weight="600">SafetyAgent</text>
-  <text x="1025" y="610" text-anchor="middle" fill="#fce7f3" font-size="11">VO / trip_id · AI Agent</text>
-  <text x="1025" y="627" text-anchor="middle" fill="#fbcfe8" font-size="10">monitor · awakeable · ↻ 8s</text>
-  <text x="1025" y="642" text-anchor="middle" fill="#fbcfe8" font-size="10">ctx.run for LLM (mocked)</text>
+  <text x="1025" y="588" text-anchor="middle" fill="white" font-size="13" font-weight="600">RegionSafetyAgent</text>
+  <text x="1025" y="607" text-anchor="middle" fill="#fce7f3" font-size="10">VO / region · AI Agent</text>
+  <text x="1025" y="624" text-anchor="middle" fill="#fbcfe8" font-size="10">halts unsafe regions · ↻ 10s</text>
+  <text x="1025" y="640" text-anchor="middle" fill="#fbcfe8" font-size="10">ctx.run · awakeable verdict</text>
 
   <!-- One-way arrows: Restate → right workers -->
   <line x1="845" y1="255" x2="900" y2="255" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>

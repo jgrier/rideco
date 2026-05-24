@@ -5,14 +5,10 @@ builds a quoted offer (synchronously fans out to Offers → ETA + Pricing).
 `confirm` enqueues the trip into the region's Dispatch round and then
 SUSPENDS on an Awakeable that Dispatch will eventually resolve with a
 driver_id. When the match arrives, the same `confirm` invocation resumes,
-records the assignment, and fans out to Locations and SafetyAgent.
+records the assignment, and fans out to Locations.
 
 The awakeable pattern makes the dependency 1-way: Trip calls Dispatch,
 Dispatch resolves a token Trip handed it. Dispatch never imports Trip.
-
-Trip is a stateful microservice exposing two long-running operations
-(`request_ride` and `confirm`); the rest are short state mutations or
-shared reads.
 """
 
 import restate
@@ -30,7 +26,6 @@ from rideco.services import dispatch as dispatch_svc
 from rideco.services import locations as locations_svc
 from rideco.services import offers as offers_svc
 from rideco.services import pricing as pricing_svc
-from rideco.services import safety_agent as safety_svc
 
 trip = restate.VirtualObject("Trip")
 
@@ -86,7 +81,7 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
       2. Suspend on the awakeable. No Python process held during the wait.
       3. When Dispatch's next matching round resolves the awakeable, this same
          invocation resumes with the driver_id.
-      4. Record assignment, fan out to Locations and SafetyAgent.
+      4. Record assignment, fan out to Locations.
     """
     trip_id = ctx.key()
     region = await ctx.get("region", type_hint=str)
@@ -125,12 +120,6 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
         key=driver_id,
         arg={"trip_id": trip_id},
     )
-    log("Trip", "→ SafetyAgent.start_monitoring", flow="send", trip=trip_id)
-    ctx.object_send(
-        safety_svc.start_monitoring,
-        key=trip_id,
-        arg={"driver_id": driver_id, "region": region},
-    )
 
     log("Trip", "assigned", trip=trip_id, driver=driver_id, epoch=epoch_id)
     return {"trip_id": trip_id, "status": TRIP_ASSIGNED, "driver_id": driver_id, "epoch_id": epoch_id}
@@ -140,8 +129,6 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     trip_id = ctx.key()
     ctx.set("status", TRIP_COMPLETED)
-    log("Trip", "→ SafetyAgent.stop_monitoring", flow="send", trip=trip_id)
-    ctx.object_send(safety_svc.stop_monitoring, key=trip_id, arg={})
     log("Trip", "completed", trip=trip_id)
     return {"trip_id": trip_id, "status": TRIP_COMPLETED}
 
@@ -150,8 +137,6 @@ async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 async def cancel(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     trip_id = ctx.key()
     ctx.set("status", TRIP_CANCELLED)
-    log("Trip", "→ SafetyAgent.stop_monitoring", flow="send", trip=trip_id)
-    ctx.object_send(safety_svc.stop_monitoring, key=trip_id, arg={})
     log("Trip", "cancelled", trip=trip_id)
     return {"trip_id": trip_id, "status": TRIP_CANCELLED}
 

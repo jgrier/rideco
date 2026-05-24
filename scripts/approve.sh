@@ -10,7 +10,7 @@ if [ $# -lt 1 ]; then
   echo "usage: $0 <awakeable_id> [verdict]"
   echo
   echo " find the awakeable id with:"
-  echo "   scripts/show-agent.sh <trip_id>   # look for 'pending_awakeable'"
+  echo "   scripts/show-region.sh <region>   # look for 'pending_awakeable'"
   echo " or look for 'ESCALATE (suspending for human verdict)' in the serve log"
   exit 1
 fi
@@ -37,9 +37,10 @@ echo
 echo " ✓ Awakeable resolved."
 echo
 echo " In Terminal 1 you should see (within ~1s):"
-echo "   SafetyAgent RESUMED trip=<id> verdict=$VERDICT"
-echo "   [self→] SafetyAgent → tick in 8s"
+echo "   RegionSafety RESUMED region=<id> verdict=$VERDICT"
+echo "   [send→] RegionSafety → Dispatch.set_active(true)  (if approve)"
+echo "   [self→] RegionSafety → tick in 10s"
 echo
 echo " Verify with:"
-echo "   scripts/show-agent.sh <trip_id>      # pending_awakeable should be null"
+echo "   scripts/show-region.sh <region>      # pending_awakeable should be null"
 echo "   scripts/show-invocations.sh          # no more running invocations"

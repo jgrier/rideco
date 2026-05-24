@@ -1,23 +1,19 @@
 """Dispatch — batched matching round per region.
 
-Real shape: every few seconds, build a weighted bipartite graph (riders × drivers
-in the region), solve via LP relaxation → Hungarian / commercial solver,
-emit assignments, carry unmatched riders forward to the next batch. Demo
-shape: same cadence, greedy nearest-driver instead of Hungarian (good enough
-to show the architecture).
+Every few seconds, build a weighted bipartite graph (riders × drivers in
+the region), solve via LP relaxation → Hungarian / commercial solver in a
+real system; greedy nearest-driver here for the demo. Emit assignments
+by resolving the awakeable each Trip handed in on enqueue. Carry
+unmatched riders forward to the next batch.
 
-Dependency is one-way: Trip calls Dispatch with an awakeable token; Dispatch
-resolves it when a match is found. Dispatch never imports Trip — it has no
-knowledge of Trip's state machine. It just produces matches and resolves
-the awakeables it was handed.
+Dependency is one-way: Trip calls Dispatch with an awakeable token;
+Dispatch resolves it when a match is found. Dispatch never imports Trip.
 
-Key design choices worth pointing at on stage:
-- One Virtual Object per region. State is the active driver pool and the
-  pending trip queue (with each trip's awakeable token).
-- Epoch cadence advances itself via a delayed `close_epoch` send to the
-  same key. No external scheduler.
-- Trip enqueue, driver register/deregister, and `close_epoch` are all
-  serialized by region so the matcher always sees a consistent snapshot.
+Each region's Dispatch VO has an `active` flag (default true). When the
+RegionSafetyAgent halts a region, it sets active=false; close_epoch sees
+that and skips matching for that epoch (trips stay queued). When the
+human approves resume, active flips back to true and the backlog drains
+on the next epoch.
 """
 
 from datetime import timedelta
@@ -36,6 +32,35 @@ from rideco.services import locations as locations_svc
 dispatch = restate.VirtualObject("Dispatch")
 
 EPOCH_INTERVAL = timedelta(seconds=5)
+
+
+@dispatch.handler(kind="shared")
+async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
+    """Read-only inspector for a region's dispatch state."""
+    active = await ctx.get("active", type_hint=bool)
+    if active is None:
+        active = True
+    return {
+        "region": ctx.key(),
+        "active": active,
+        "epoch_id": (await ctx.get("epoch_id", type_hint=int)) or 0,
+        "loop_running": (await ctx.get("loop_running", type_hint=bool)) or False,
+        "active_driver_count": len((await ctx.get("active_driver_ids", type_hint=list)) or []),
+        "pending_trips_count": len((await ctx.get("pending_trips", type_hint=list)) or []),
+    }
+
+
+@dispatch.handler("set_active")
+async def set_active(ctx: restate.ObjectContext, payload: dict) -> dict:
+    """Turn matching on or off for this region. Called by RegionSafetyAgent."""
+    region = ctx.key()
+    active = bool(payload.get("active", True))
+    prev = (await ctx.get("active", type_hint=bool))
+    if prev is None:
+        prev = True
+    ctx.set("active", active)
+    log("Dispatch", f"set_active={active} (was {prev})", region=region)
+    return {"region": region, "active": active}
 
 
 @dispatch.handler("register_driver")
@@ -61,11 +86,8 @@ async def deregister_driver(ctx: restate.ObjectContext, payload: dict) -> dict:
 
 @dispatch.handler("enqueue_trip")
 async def enqueue_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
-    """A Trip joins the next dispatch round for this region.
-
-    Payload carries the trip's awakeable token. We hold it until matching,
-    then resolve it with the driver_id. Dispatch never calls back into Trip.
-    """
+    """A Trip joins the next dispatch round for this region. Payload carries
+    the trip's awakeable token — we resolve it when matching succeeds."""
     trip_id = payload["trip_id"]
     origin = payload["origin"]
     awakeable = payload["awakeable"]
@@ -75,7 +97,6 @@ async def enqueue_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
     pending.append({"trip_id": trip_id, "origin": origin, "awakeable": awakeable})
     ctx.set("pending_trips", pending)
 
-    # Kick off the round loop on first enqueue.
     already_running = (await ctx.get("loop_running", type_hint=bool)) or False
     if not already_running:
         ctx.set("loop_running", True)
@@ -95,32 +116,43 @@ def _euclid(a: dict, b: dict) -> float:
 async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     """Snapshot pending trips + active drivers, run matching, resolve awakeables.
 
-    Greedy by nearest driver. A real implementation would build edge weights from
-    ETA, driver value-function (the reinforcement-learning approach common in
-    the ride-hailing literature), and market conditions, then solve via
-    Hungarian / commercial LP.
+    If the region's `active` flag is false (set by RegionSafetyAgent on a halt),
+    skip matching this epoch — trips stay queued, drivers stay registered, the
+    next epoch is still scheduled. When the agent flips active back to true,
+    the backlog drains.
     """
     region = ctx.key()
     epoch_id = (await ctx.get("epoch_id", type_hint=int)) or 1
     pending = (await ctx.get("pending_trips", type_hint=list)) or []
     drivers = list((await ctx.get("active_driver_ids", type_hint=list)) or [])
+    active = await ctx.get("active", type_hint=bool)
+    if active is None:
+        active = True
 
-    # Optional read: accident_density nudges the demo logging — could be folded
-    # into edge weights in a real matcher.
+    # If region is halted, skip matching but keep the cadence loop running so
+    # we resume immediately on un-halt.
+    if not active:
+        log("Dispatch", "close-epoch (HALTED, no matching)", region=region,
+            epoch=epoch_id, pending=len(pending), drivers=len(drivers))
+        ctx.set("epoch_id", epoch_id + 1)
+        log("Dispatch", "→ close_epoch in 5s", flow="self", region=region)
+        ctx.object_send(close_epoch, key=region, arg={}, send_delay=EPOCH_INTERVAL)
+        return {"region": region, "epoch_id": epoch_id, "halted": True,
+                "matched": 0, "pending": len(pending)}
+
+    # Optional read: accident_density nudges the demo logging.
     accident_res = await ctx.object_call(
         features_svc.get,
         key=feature_key(ENTITY_REGION, region, "accident_density"),
         arg={"default": 0.0},
     )
 
-    # Fetch driver positions for the snapshot.
     driver_positions: list[tuple[str, dict]] = []
     for driver_id in drivers:
         pos = await ctx.object_call(locations_svc.get_position, key=driver_id, arg={})
         if pos.get("lat") is not None and pos.get("status") == DRIVER_IDLE:
             driver_positions.append((driver_id, pos))
 
-    # Greedy nearest-driver match.
     assignments: list[dict] = []
     used_drivers: set[str] = set()
     leftover: list[dict] = []
@@ -147,8 +179,6 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
         matched=len(assignments), carried_over=len(leftover),
         accident_density=accident_res.get("value"))
 
-    # Resolve each match's awakeable — this is the ONLY way Dispatch
-    # communicates results outward. No knowledge of Trip required.
     for a in assignments:
         log("Dispatch", "resolve_awakeable", trip=a["trip_id"], driver=a["driver_id"])
         ctx.resolve_awakeable(a["awakeable"], {
@@ -156,7 +186,6 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
             "epoch_id": epoch_id,
         })
 
-    # Carry unmatched trips into the next epoch and schedule the next close.
     ctx.set("pending_trips", leftover)
     ctx.set("epoch_id", epoch_id + 1)
     has_more_work = bool(leftover) or bool(driver_positions)

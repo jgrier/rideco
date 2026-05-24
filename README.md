@@ -2,7 +2,7 @@
 
 RideCo is a working ride-hailing backend built on
 [Restate](https://restate.dev). Eight services (Trip, Offers, ETA, Pricing,
-Locations, Features, Dispatch, SafetyAgent) run as stateless Python workers;
+Locations, Features, Dispatch, RegionSafetyAgent) run as stateless Python workers;
 all state, durability, retries, ordering, and scheduling live inside Restate.
 
 The repo is a reproducible demo. Two terminals, a few scripts, no Kafka, no
@@ -71,12 +71,12 @@ offer.
 **Durable Execution.** Long-running operations with automatic retries, a
 durable journal that avoids re-running successful steps, timers (delayed
 calls), and awakeables for human-in-the-loop or async waits. In RideCo:
-Dispatch's batched matching rounds and SafetyAgent's per-trip monitor.
+Dispatch's batched matching rounds and RegionSafetyAgent's per-region monitor.
 
 **AI agent infrastructure.** Per-agent state, suspend across long LLM calls,
 human-in-the-loop via awakeables, deterministic replay of agent decisions —
 all the same primitives the other three domains use, applied to LLM-driven
-agents. In RideCo: SafetyAgent.
+agents. In RideCo: RegionSafetyAgent.
 
 **Serving** is a fifth concept layered on top of these: a service that
 ingests events (event-driven app, write side) AND serves a derived view via
@@ -106,9 +106,9 @@ Virtual Object keyed by `trip_id`. One per ride.
 
 **Calls:**
 - Sync RPC → `Offers.generate`
-- Sends → `Pricing.note_demand`, `Dispatch.enqueue_trip` (carries an awakeable token), `Locations.accept_trip`, `SafetyAgent.start_monitoring` / `stop_monitoring`
+- `send()` → `Pricing.note_demand`, `Dispatch.enqueue_trip` (carries an awakeable token), `Locations.accept_trip`
 
-Trip is the only orchestrator. `confirm` is a long-running operation: it creates an awakeable, sends one-way to `Dispatch.enqueue_trip` carrying the awakeable name, and **suspends** on the awakeable. When Dispatch's next matching round resolves the awakeable with a `driver_id`, the same `confirm` invocation resumes, records the assignment, and fans out to Locations and SafetyAgent. Trip → Dispatch is a one-way dependency; Dispatch never imports Trip.
+Trip is the only orchestrator. `confirm` is a long-running operation: it creates an awakeable, sends one-way to `Dispatch.enqueue_trip` carrying the awakeable name, and **suspends** on the awakeable. When Dispatch's next matching round resolves the awakeable with a `driver_id`, the same `confirm` invocation resumes, records the assignment, and fans out to Locations. Trip → Dispatch is a one-way dependency; Dispatch never imports Trip.
 
 ### Offers — Stateful microservice (stateless service)
 
@@ -153,7 +153,7 @@ Virtual Object keyed by `driver_id`.
 - Driver app pings (one-way send): `ping`
 - Driver app status changes via `call()`: `set_status`
 - Send from Trip on assignment: `accept_trip`
-- Sync shared read from Dispatch + SafetyAgent: `get_position`
+- Sync shared read from Dispatch + RegionSafetyAgent: `get_position`
 
 **State:** `status`, `matched_lat`, `matched_lng`, `last_ping_ms`, `region`, `current_trip_id`.
 
@@ -167,7 +167,7 @@ Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}`.
 
 **Receives:**
 - `send()` from external mapping providers (and internal callers): `set`
-- `call()` from ETA, Pricing, Dispatch, SafetyAgent (shared read): `get`
+- `call()` from ETA, Pricing, Dispatch, RegionSafetyAgent (shared read): `get`
 
 **State:** `value`, `version`, `last_updated_ms`.
 
@@ -193,25 +193,40 @@ Virtual Object keyed by `region`. Pure event-driven — every handler is a send.
 
 Long-running matcher. Each epoch: snapshot pending trips, snapshot driver positions, greedy nearest-driver match, resolve the awakeable token of each matched trip with the driver_id. Unmatched trips carry forward to the next epoch. Dispatch has no knowledge of Trip's state machine — it just resolves tokens it was handed.
 
-### SafetyAgent — AI Agent infrastructure
+### RegionSafetyAgent — AI Agent infrastructure
 
-Virtual Object keyed by `trip_id`. One agent per active ride.
+Virtual Object keyed by `region`. One agent per region; runs continuously
+in the background while the system is up.
 
 **Receives:**
-- Sends from Trip: `start_monitoring`, `stop_monitoring`
-- Self-scheduled `tick` (delayed call every 8s)
+- `send()` from mapping-events sim on bootstrap: `start_monitoring`
+- Self-scheduled `tick` (delayed call every 10s)
 - External HTTP awakeable resolve from human operator
-- Sync shared read: `get`
+- `force_resume` (out-of-band manual override)
+- `call()` from inspectors (shared read): `get`
 
-**State:** `active`, `driver_id`, `region`, `ticks`, `escalations`, `pending_awakeable`.
+**State:** `active`, `region_active`, `ticks`, `halts`, `last_score`, `last_rationale`, `last_verdict`, `pending_awakeable`.
 
 **Calls:**
-- Sync RPC → `Locations.get_position`, `Features.get` (per tick)
-- `ctx.run_typed` for the mocked LLM risk score — journaled so replays are deterministic
-- `ctx.awakeable()` to create a suspension token; `await future` to suspend; resumes when external HTTP resolves the awakeable
-- Self-send → `tick` in 8s
+- `call()` → `Features.get` for the region's `weather` and `accident_density`
+- `ctx.run_typed` for the composite risk score — journaled so replays are deterministic
+- `send()` → `Dispatch.set_active(false)` to halt the region; `Dispatch.set_active(true)` on approve
+- `ctx.awakeable()` to suspend on a human verdict
+- Self-`send()` → `tick` in 10s
 
-The long-running AI agent. Three primitives the other services don't exercise: `ctx.run` for non-deterministic side effects (the LLM call), `ctx.awakeable()` for human-in-the-loop suspension, and per-agent state via the Virtual Object. Combined: a per-conversation agent with durable memory, deterministic replay, and clean human-in-the-loop — without LangGraph, Redis sessions, or an external scheduler.
+**What it does.** Every 10s, reads its region's features, computes a
+composite risk via the mocked LLM, and decides whether to halt dispatch.
+On halt: `send()`s `Dispatch.set_active(false)`, creates an awakeable,
+suspends. A human resolves the awakeable with `approve` (region resumes,
+`Dispatch.set_active(true)`) or `deny` (region stays halted; the agent's
+next tick still monitors but doesn't re-escalate until something resumes
+the region). Trips in the halted region queue in Dispatch's
+`pending_trips` and drain on resume.
+
+This is the AI-agent showcase: per-key state, mocked LLM via `ctx.run`,
+awakeable for human-in-the-loop gating, all on Restate's durable runtime.
+Per-region — one agent per region. SF halts in isolation; NYC, LA, SEA
+keep matching.
 
 ## Why no Kafka
 
@@ -269,8 +284,8 @@ Three phases, ENTER between every step. Each step explains what's happening,
 what to look for in Terminal 1, and where to look in the Restate Web UI:
 
 1. **Quiet trip** — one rider request end-to-end; the full architecture visible in the log.
-2. **Human-in-the-loop** — escalate via the SafetyAgent; the agent suspends on an awakeable; you POST a verdict; the same invocation resumes.
-3. **Complete the trip** — terminal state, agent shuts down.
+2. **Region halts (human-in-the-loop)** — a region's features drift into unsafe territory (or you force a spike); the RegionSafetyAgent halts dispatch for that region and suspends on an awakeable; other regions keep matching unaffected.
+3. **Human approves** — you POST a verdict; the same invocation resumes; dispatch comes back; the queued backlog drains.
 
 ## Scripts reference
 
@@ -284,14 +299,14 @@ what to look for in Terminal 1, and where to look in the Restate Web UI:
 | `./scripts/setup-region.sh <region>` | Initialize a region: clear features + one idle driver |
 | `./scripts/make-trip.sh <trip_id> <region>` | Rider request + confirm (sync; confirm waits for match) |
 | `./scripts/make-trip-send.sh <trip_id> <region>` | Same but fire-and-forget request_ride |
-| `./scripts/complete-trip.sh <trip_id>` | Mark a trip complete; SafetyAgent stops |
+| `./scripts/complete-trip.sh <trip_id>` | Mark a trip complete |
+| `./scripts/spike-region.sh [region]` | Force a region's features into unsafe territory (triggers RegionSafetyAgent to halt) |
+| `./scripts/show-region.sh [region]` | Pretty-print a region's RegionSafetyAgent + Dispatch state |
 | `./scripts/cancel-trip.sh <trip_id>` | Cancel a trip |
 | `./scripts/set-feature.sh <region> <feature> <value>` | Write a feature directly via HTTP |
 | `./scripts/poison.sh [region]` | Publish the POISON sentinel into Features for that region |
-| `./scripts/escalate.sh [region]` | Push accident_density past 0.6 to trigger SafetyAgent escalation |
-| `./scripts/approve.sh <awakeable_id> [verdict]` | Resolve a suspended SafetyAgent awakeable |
+| `./scripts/approve.sh <awakeable_id> [verdict]` | Resolve a suspended RegionSafetyAgent awakeable |
 | `./scripts/show-trip.sh <trip_id>` | Pretty-print Trip state with a status legend |
-| `./scripts/show-agent.sh <trip_id>` | Pretty-print SafetyAgent state |
 | `./scripts/show-invocations.sh` | `restate invocations list` with a status legend |
 
 ## Versions
