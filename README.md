@@ -1,6 +1,6 @@
 # RideCo on Restate
 
-RideCo is a working ride-hailing backend built as a **Durable Mesh** on
+RideCo is a working ride-hailing backend built on
 [Restate](https://restate.dev). Eight services (Trip, Offers, ETA, Pricing,
 Locations, Features, Dispatch, SafetyAgent) run as stateless Python workers;
 all state, durability, retries, ordering, and scheduling live inside Restate.
@@ -21,6 +21,14 @@ worker. **Workers never call each other directly.** When a worker uses
 `ctx.call()` or `ctx.send()` from inside a handler, the call goes back
 through Restate, which routes it onward. Restate is always the hub.
 
+**`call()` vs `send()`.** Every handler supports both — the choice is at
+the call site. `call()` is synchronous: the caller awaits the response.
+`send()` is asynchronous: fire-and-forget, returns immediately. Both
+journal the invocation in the Restate log first, so both are durable from
+the moment Restate acks. A trip request that uses `call()` blocks waiting
+for the result; a GPS ping that uses `send()` returns the moment Restate
+has the message.
+
 ## All workers are stateless
 
 Each of the eight services is an ordinary Python process behind hypercorn —
@@ -30,6 +38,20 @@ horizontally without coordination, run anywhere a regular HTTP service can
 run. **Every operational concern that usually sticks to "stateful services"
 lives in Restate.** That's a substantial simplification: deploy stateless
 workers behind a load balancer, run a Restate cluster, done.
+
+## Virtual Objects
+
+Most of RideCo's services are **Virtual Objects** keyed by a domain
+identifier — Trip per `trip_id`, Pricing per `region`, Locations per
+`driver_id`, Features per `entity:id:feature_name`. Two properties matter:
+
+- **Per-key state.** A VO instance "always exists" for its key; state
+  survives across processes and restarts.
+- **Per-key serialization.** Exclusive handlers for the same key run
+  one-at-a-time — no locks, no coordination service. Shared handlers
+  (read-only) can run concurrently. This is why Dispatch's `close_epoch`
+  for SF can't race itself, and why Trip's lifecycle stays consistent
+  under concurrent updates.
 
 ## Four domains, plus serving
 
@@ -67,10 +89,10 @@ arrows in the architecture diagram; they're implicit.
 
 How each service is invoked, what state it owns, what it calls.
 
-Two recurring patterns underneath every interaction:
+Two patterns underneath every interaction:
 
-- **Sync request** (`[sync→]` in logs) — caller awaits a response. Writes to the Restate log first, then blocks until the worker completes.
-- **Durable async send** (`[send→]` in logs) — fire-and-forget into the Restate log. Returns immediately. Delayed self-sends (`[self→]`) are the same primitive with a `send_delay` — they replace external schedulers.
+- **`call()`** (`[sync→]` in logs) — caller awaits. Writes to the Restate log first, then blocks until the worker completes.
+- **`send()`** (`[send→]` in logs) — fire-and-forget into the Restate log. Returns immediately. Delayed sends (`[self→]` when targeting self) replace external schedulers.
 
 ### Trip — Stateful microservice
 
@@ -129,7 +151,7 @@ Virtual Object keyed by `driver_id`.
 
 **Receives:**
 - Driver app pings (one-way send): `ping`
-- Driver app status changes (sync HTTP): `set_status`
+- Driver app status changes via `call()`: `set_status`
 - Send from Trip on assignment: `accept_trip`
 - Sync shared read from Dispatch + SafetyAgent: `get_position`
 
@@ -144,16 +166,14 @@ Per-driver state. Pings are fire-and-forget; the smoothing (mocked here as an ex
 Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}`.
 
 **Receives:**
-- One-way HTTP send from external mapping providers (and internal callers): `set` / `set/send`
-- Sync shared read from ETA, Pricing, Dispatch, SafetyAgent: `get`
+- `send()` from external mapping providers (and internal callers): `set`
+- `call()` from ETA, Pricing, Dispatch, SafetyAgent (shared read): `get`
 
 **State:** `value`, `version`, `last_updated_ms`.
 
 **Calls:** nothing.
 
-Online feature store. External providers POST events to Restate's ingress; Restate journals the write and invokes `Features.set` on the right key. Internal readers get the current value via the shared `get` handler.
-
-**Poison-pill target.** When a `set` arrives with the sentinel value `POISON` and the gracefully-handle flag is off, the handler raises a non-Terminal `ValueError`. Restate retries forever in `backing-off` status. Because Features is a Virtual Object and `set` is an exclusive handler, **subsequent `set` calls for the same key queue up behind the stuck one**. Other Feature keys and other regions keep working — that's per-key failure isolation.
+Online feature store. External providers `send()` events to Restate; Restate journals the write and invokes `Features.set` on the right key. Internal readers `call()` `get` to retrieve the current value.
 
 ### Dispatch — Durable Execution
 
@@ -200,18 +220,20 @@ hop goes to the Restate log via Restate's HTTP ingress.
 
 The argument is short. Every Restate handler is durable from the moment
 ingress acks the request — the Restate log handles the durable-input-queue
-job a Kafka topic would otherwise do, without the cluster. For internal RPC,
-the sync path is just function calls (`ctx.call`). For internal one-way
-hops, `ctx.send` writes to the same log. For external publishers, HTTP
-`/send` gives the same fire-and-forget durability. For cadence, delayed
-self-sends replace cron and Airflow.
+job a Kafka topic would otherwise do, without the cluster. For sync calls,
+`call()` is just durable function-call ergonomics. For async, `send()`
+writes to the same log. External publishers use `send()` the same way
+internal callers do. For cadence, delayed sends replace cron and Airflow.
 
-**Restate and Kafka coexist peacefully** when you do need Kafka — Restate
-has first-class Kafka subscriptions (inbound) and producer support
-(outbound). But Restate is *a much better log for messaging between
-microservices*: lower latency, no consumer-group bookkeeping, durability and
-ordering tuned for the orchestration workload. Many architectures that have
-Kafka today simply don't need it.
+**Restate and Kafka coexist peacefully.** Restate has first-class Kafka
+subscriptions (inbound) and producer support (outbound). But for
+async/event-driven microservice workloads, Restate is just a better log:
+lower latency, no consumer-group bookkeeping, durability and ordering tuned
+for this exact workload. A Restate Kafka subscription literally just copies
+messages from Kafka into the Restate log before any processing happens —
+that extra copy is unnecessary when your producers can speak HTTP directly
+to Restate in the first place. Many architectures that have Kafka today
+simply don't need it.
 
 ## How to run the demo
 
@@ -243,14 +265,12 @@ When the Phase 3 fix step asks for it: `Ctrl+C` here, edit
 ./scripts/demo-t2.sh
 ```
 
-Five phases, ENTER between every step. Each step explains what's happening,
+Three phases, ENTER between every step. Each step explains what's happening,
 what to look for in Terminal 1, and where to look in the Restate Web UI:
 
 1. **Quiet trip** — one rider request end-to-end; the full architecture visible in the log.
-2. **Poison-pill** — publish a sentinel value to Features; Features.set jams in backing-off; subsequent writes for the same key queue; other keys unaffected.
-3. **Fix the code** — flip the gracefully-handle flag, restart Terminal 1, watch the stuck invocation drain.
-4. **Human-in-the-loop** — crank region accidents past the threshold; SafetyAgent suspends on an awakeable; you POST a verdict; agent resumes.
-5. **Complete the trip** — terminal state, agent shuts down.
+2. **Human-in-the-loop** — escalate via the SafetyAgent; the agent suspends on an awakeable; you POST a verdict; the same invocation resumes.
+3. **Complete the trip** — terminal state, agent shuts down.
 
 ## Scripts reference
 
