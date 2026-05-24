@@ -23,9 +23,10 @@ from typing import Any, Optional
 
 import httpx
 from rich.text import Text
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Header, RichLog, Static
+from textual.widgets import DataTable, Footer, Header, Static
 
 from rideco.shared.regions import all_regions
 from rideco.tui.processes import (
@@ -37,6 +38,13 @@ from rideco.tui.processes import (
     ProcessManager,
     ServiceProc,
 )
+
+
+# Bottom pane modes
+MODE_HELP = "help"
+MODE_BOOT = "boot"
+MODE_TEARDOWN = "teardown"
+MODE_LOG = "log"
 
 
 INGRESS = "http://localhost:8080"
@@ -206,29 +214,30 @@ class ServicesTable(DataTable):
         self.update_cell(svc.name, "last_log", tail or "")
 
 
-HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3b — process ownership)[/dim]
+HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3c — log streaming)[/dim]
 
 [bold cyan]Keys[/bold cyan]
   [yellow]q[/yellow]    quit (tears everything down)
   [yellow]?[/yellow]    show this help
   [yellow]r[/yellow]    refresh now
+  [yellow]↑/↓[/yellow]  on the Services table, navigate; this pane shows that
+        service's live log tail
 
-[bold cyan]What just happened[/bold cyan]
-  On launch the TUI brought up restate-server, spawned the twelve
-  service hypercorn processes, registered each deployment, and
-  started the sim fleet. Both tables above are live.
+[bold cyan]What's running[/bold cyan]
+  The TUI owns restate-server, the twelve service hypercorns, and
+  the sim fleet. Tables above are live (1s poll).
 
 [bold cyan]Still to come[/bold cyan]
-  • k    kill the selected service
-  • b    boot the selected service
-  • s    spike a region
-  • a    approve a halted region
-  • selecting a service in the Services table shows its log tail here
+  • k / b   kill / boot the selected service
+  • s / a   spike a region / approve a halted region
   • demo mode with scripted phases
 """
 
 
 class BottomPane(Static):
+    """Multi-mode bottom area: help, boot progress, teardown progress, or
+    a tailing log view of the currently-selected service."""
+
     def on_mount(self) -> None:
         self.update(HELP_TEXT)
 
@@ -240,6 +249,29 @@ class BottomPane(Static):
             f"  {line}" for line in lines
         )
         self.update(body)
+
+    def show_teardown(self, lines: list[str]) -> None:
+        body = "[bold]Tearing down...[/bold]\n\n" + "\n".join(
+            f"  {line}" for line in lines
+        )
+        self.update(body)
+
+    def show_log(self, svc: ServiceProc, height_hint: int = 14) -> None:
+        """Render the most-recent log lines for the given service."""
+        header = (
+            f"[bold cyan]{svc.name}[/bold cyan]"
+            f"   port=[yellow]{svc.port}[/yellow]"
+            f"   status=[white]{svc.status}[/white]"
+            f"   pid=[white]{svc.pid or '—'}[/white]"
+            f"   [dim](? for help)[/dim]"
+        )
+        lines = list(svc.log)[-height_hint:]
+        if not lines:
+            body_text = "[dim]no log output yet[/dim]"
+        else:
+            from rich.markup import escape
+            body_text = "\n".join(escape(line) for line in lines)
+        self.update(f"{header}\n\n{body_text}")
 
 
 # ───── app ───────────────────────────────────────────────────────────
@@ -263,7 +295,14 @@ class RidecoApp(App):
         super().__init__()
         self._auto_boot = auto_boot
         self._boot_lines: list[str] = []
+        self._teardown_lines: list[str] = []
         self._tearing_down = False
+        self._mode: str = MODE_HELP
+        self._selected_service: Optional[str] = None
+        # The ServicesTable auto-emits a RowHighlighted for row 0 on mount.
+        # We swallow that so the bottom pane stays on the help screen until
+        # the user actually arrows into a service.
+        self._initial_highlight_consumed = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -292,28 +331,34 @@ class RidecoApp(App):
 
     def _boot_progress(self, line: str) -> None:
         self._boot_lines.append(line)
-        try:
-            self.query_one(BottomPane).show_boot(self._boot_lines)
-        except Exception:
-            pass
+        if self._mode == MODE_BOOT:
+            try:
+                self.query_one(BottomPane).show_boot(self._boot_lines)
+            except Exception:
+                pass
 
     async def _boot(self) -> None:
+        self._mode = MODE_BOOT
         try:
             await self.pm.full_boot(progress=self._boot_progress)
         except Exception as e:
             self._boot_progress(f"[red]boot failed: {e}[/red]")
             return
-        # Boot complete — flip the bottom pane back to help.
-        self.query_one(BottomPane).show_help()
+        # Boot complete — flip back to help (unless user has already
+        # selected a service to tail).
+        if self._mode == MODE_BOOT:
+            self._mode = MODE_HELP
+            self.query_one(BottomPane).show_help()
 
     async def _teardown(self) -> None:
         self._tearing_down = True
-        lines: list[str] = ["[bold]Tearing down...[/bold]"]
+        self._mode = MODE_TEARDOWN
+        self._teardown_lines = []
 
         def progress(msg: str) -> None:
-            lines.append(f"  {msg}")
+            self._teardown_lines.append(msg)
             try:
-                self.query_one(BottomPane).update("\n".join(lines))
+                self.query_one(BottomPane).show_teardown(self._teardown_lines)
             except Exception:
                 pass
 
@@ -344,10 +389,45 @@ class RidecoApp(App):
             return
         for svc in self.pm.services.values():
             table.apply(svc)
+        # If the bottom is in log-tail mode, repaint the selected service's
+        # buffer so new lines stream in at the same cadence.
+        if self._mode == MODE_LOG and self._selected_service:
+            svc = self.pm.services.get(self._selected_service)
+            if svc is not None:
+                try:
+                    self.query_one(BottomPane).show_log(svc)
+                except Exception:
+                    pass
+
+    # ───── events ────────────────────────────────────────────────────
+
+    @on(DataTable.RowHighlighted)
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        """When the user arrows around the Services table, the bottom pane
+        flips to that service's live log tail. Highlighting in the Regions
+        table doesn't change the bottom mode."""
+        if not isinstance(event.control, ServicesTable):
+            return
+        if not self._initial_highlight_consumed:
+            self._initial_highlight_consumed = True
+            return
+        if event.row_key is None or event.row_key.value is None:
+            return
+        name = event.row_key.value
+        svc = self.pm.services.get(name)
+        if svc is None:
+            return
+        self._selected_service = name
+        self._mode = MODE_LOG
+        try:
+            self.query_one(BottomPane).show_log(svc)
+        except Exception:
+            pass
 
     # ───── actions ───────────────────────────────────────────────────
 
     def action_help(self) -> None:
+        self._mode = MODE_HELP
         self.query_one(BottomPane).show_help()
 
     async def action_refresh_now(self) -> None:
