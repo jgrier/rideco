@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
 # T2 (COMMANDS) driver — guided demo walkthrough.
 #
-# This version drives the demo against a LIVE system: rider, driver, and
-# mapping-events sims run in the background for the full walkthrough, so
-# traffic keeps flowing as you step through the phases. The RegionSafetyAgent
-# is the central character — it watches per-region features, halts dispatch
-# when conditions get unsafe, and suspends on an awakeable until a human
-# approves resume.
+# Drives the demo against a LIVE system: rider, driver, and mapping-events
+# sims run in the background while you step through the phases. The
+# RegionSafetyAgent is the central character — it watches per-region
+# features, halts dispatch when conditions get unsafe, and suspends on an
+# awakeable until a human approves resume.
 #
-# Prereq: Terminal 1 is running ./scripts/demo-t1.sh fresh (or make serve).
+# Prereq: T1 is running (./scripts/demo-t1.sh fresh) and ideally T3 is
+# running (./scripts/watch-regions.sh) so you can watch state flip live.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_DIR"
 
-# ───── helpers ───────────────────────────────────────────────────────
 pause() { echo; echo "─── press ENTER to continue ───"; read -r; }
 
 run() {
-  echo
-  echo "\$ $*"
-  echo
+  echo; echo "\$ $*"; echo
   "$@"
 }
 
@@ -35,17 +32,13 @@ section() {
 countdown() {
   local secs=$1
   while [ "$secs" -gt 0 ]; do
-    printf "\r   waiting %2ds... " "$secs"
-    sleep 1
-    secs=$((secs - 1))
+    printf "\r   waiting %2ds... " "$secs"; sleep 1; secs=$((secs - 1))
   done
   printf "\r   done           \n"
 }
 
-# Background sim PIDs (set when sims start; killed on exit)
-RIDER_PID=""
-DRIVER_PID=""
-MAPPING_PID=""
+# Background sim PIDs (killed on exit)
+RIDER_PID=""; DRIVER_PID=""; MAPPING_PID=""
 cleanup_sims() {
   for pid in "$RIDER_PID" "$DRIVER_PID" "$MAPPING_PID"; do
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
@@ -60,40 +53,21 @@ cat <<'EOF'
  RideCo demo — TERMINAL 2 (commands)
 ════════════════════════════════════════════════════════════════
 
- The system runs LIVE for the whole walkthrough. Three sims keep
- traffic flowing in the background: riders requesting trips,
- drivers pinging GPS, mapping providers publishing weather and
- accident data. The Restate log handles every call.
+ Three phases, ENTER between steps:
 
- What you're about to see, in 3 phases:
+   1. System alive — sims keep traffic flowing across four regions
+   2. SF goes unsafe — RegionSafetyAgent halts dispatch + suspends
+   3. Human approves — agent resumes, backlog drains
 
-   1. System is alive — sims drive constant traffic across regions
-   2. A region goes unsafe → RegionSafetyAgent halts dispatch for
-      that region → suspends on an awakeable for a human verdict
-   3. Human approves → dispatch resumes → backlog drains
-
- Every step pauses for ENTER. Watch Terminal 1 (the log) and
- http://localhost:9070 (Restate Web UI) between steps.
-
- Two SDK primitives + one awakeable:
-
-   ▸ call()      synchronous — caller awaits the response
-   ▸ send()      asynchronous — fire-and-forget into the Restate log;
-                 delayed sends use the same primitive
-   ▸ awakeable   pause an invocation on a token; resume when
-                 another handler or HTTP POST resolves it
-
- Every handler supports both call() and send() — choice is at the
- call site.
+ Watch T1 (the log) and T3 (the dashboard) as we go.
 EOF
 pause
 
 # ───── boot ──────────────────────────────────────────────────────────
 section "BOOTSTRAP — register Python services with Restate"
 echo
-echo " Tells Restate where to find the eight services. Restate's ingress"
-echo " on :8080 routes every external HTTP request (call() or send()) to"
-echo " the right handler, with the Restate log doing the durable buffering."
+echo " Restate's ingress (:8080) routes every external call into the right"
+echo " handler. register.sh tells Restate where to find the eight services."
 pause
 run ./scripts/register.sh
 pause
@@ -101,16 +75,12 @@ pause
 # ───── PHASE 1 ───────────────────────────────────────────────────────
 section "PHASE 1 — system is alive"
 echo
-echo " About to start three background sims:"
-echo "   ▸ rider-sim     — fires trip requests across all regions"
-echo "   ▸ driver-sim    — keeps drivers online + pinging GPS"
-echo "   ▸ mapping-sim   — publishes weather + accident features"
-echo "                     (also bootstraps Pricing.refresh and"
-echo "                     RegionSafetyAgent.start_monitoring per region)"
-echo
-echo " Their output is sent to log files in /tmp/rideco-*-sim.log to"
-echo " keep this terminal clean. Watch Terminal 1 for the live"
-echo " inter-service activity."
+echo " Starting three background sims that play the role of external"
+echo " actors:"
+echo "   driver-sim   — drivers online + pinging GPS"
+echo "   mapping-sim  — weather + accident feeds (also kicks off the"
+echo "                  Pricing.refresh and RegionSafetyAgent.tick loops)"
+echo "   rider-sim    — trip requests across all regions"
 pause
 
 echo " starting sims..."
@@ -118,91 +88,53 @@ echo " starting sims..."
 DRIVER_PID=$!
 .venv/bin/python -m rideco.sim.mapping_events --interval 12 > /tmp/rideco-mapping-sim.log 2>&1 &
 MAPPING_PID=$!
-sleep 3   # let drivers come online + mapping bootstrap RegionSafetyAgents
+sleep 3
 .venv/bin/python -m rideco.sim.rider --riders 3 --rate 0.1 > /tmp/rideco-rider-sim.log 2>&1 &
 RIDER_PID=$!
-echo "   driver-sim PID:  $DRIVER_PID"
-echo "   mapping-sim PID: $MAPPING_PID"
-echo "   rider-sim PID:   $RIDER_PID"
-echo
-echo " letting the system settle for ~15s — drivers register, mapping"
-echo " bootstraps RegionSafetyAgent per region, riders begin requesting trips"
+
+echo " letting the system settle..."
 countdown 15
+echo
+echo " T3 should show all four regions active, low risk, Done climbing."
 pause
 
 run ./scripts/show-invocations.sh
 echo
-echo " You should see:"
-echo "   ▸ scheduled  — Dispatch close_epoch loops, Pricing refresh loops,"
-echo "                  RegionSafetyAgent tick loops, all per region"
-echo "   ▸ running    — current handler invocations (trips, matches, etc.)"
-pause
-
-echo " snapshot of each region's safety agent + dispatch state:"
-for region in SF NYC LA SEA; do
-  echo
-  echo "  $region:"
-  curl -s -X POST "http://localhost:8080/RegionSafetyAgent/$region/get" \
-    -H 'Content-Type: application/json' -d '{}' \
-    | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-print(f\"    active={d.get('active')} region_active={d.get('region_active')} ticks={d.get('ticks')} halts={d.get('halts')} last_score={d.get('last_score')}\")
-" || true
-done
-echo
-echo " All regions should be active=true, region_active=true, low scores."
+echo " Per-region scheduled invocations (Dispatch.close_epoch, Pricing.refresh,"
+echo " RegionSafetyAgent.tick) are the cadence loops — all delayed self-sends."
 pause
 
 # ───── PHASE 2 ───────────────────────────────────────────────────────
-section "PHASE 2 — a region goes unsafe"
+section "PHASE 2 — SF goes unsafe"
 echo
-echo " The RegionSafetyAgent ticks every 10s, reads its region's features"
-echo " (weather, accident_density), computes a composite risk score, and"
-echo " halts dispatch when the score crosses the threshold."
-echo
-echo " mapping-sim emits stay in safe ranges on their own, so we'll force"
-echo " SF into unsafe territory deterministically:"
+echo " RegionSafetyAgent[SF] ticks every 10s, scores its features, and"
+echo " halts dispatch when the composite risk crosses the threshold. We'll"
+echo " force the score by spiking SF's weather + accident_density:"
 pause
 
 run ./scripts/spike-region.sh SF
 echo
-echo " The RegionSafetyAgent[SF] ticks every 10s. Waiting for its next"
-echo " evaluation, which will see the spiked features and halt dispatch."
+echo " Waiting for the next agent tick..."
 countdown 12
 pause
 
 run ./scripts/show-region.sh SF
 echo
-echo " Expected:"
-echo "   • RegionSafetyAgent: region_active=false, halts=1, pending_awakeable=sign_..."
-echo "   • Dispatch:           active=false  (halted)"
-echo "   • pending_trips_count > 0  (riders queuing — backlog)"
-echo
-echo " Copy the pending_awakeable value above."
-pause
-
-run ./scripts/show-invocations.sh
-echo
-echo " In Restate UI → Invocations: RegionSafetyAgent[SF]/tick is the"
-echo " agent's suspended invocation. Notice other regions (NYC/LA/SEA)"
-echo " keep matching normally — their Dispatch loops are still firing."
+echo " region_active=false, halts=1, awakeable populated, Dispatch active=false."
+echo " On T3: SF row is HALTED in red; NYC/LA/SEA keep working."
 pause
 
 # ───── PHASE 3 ───────────────────────────────────────────────────────
-section "PHASE 3 — human approves the resume"
+section "PHASE 3 — human approves resume"
 echo
-echo " You're the human safety operator. You've reviewed the situation"
-echo " and decide SF is OK to resume. POST a verdict to the awakeable."
-echo
-echo " Reading the suspended awakeable id straight off the agent's state"
-echo " (this is what the dashboard's AWAKEABLE column shows):"
+echo " You're the safety operator. Approve to resume dispatch. We read"
+echo " the awakeable id straight off the agent's state — the same value"
+echo " T3 is showing in the AWAKEABLE column."
 AID=$(curl -s -X POST http://localhost:8080/RegionSafetyAgent/SF/get \
   -H 'Content-Type: application/json' -d '{}' \
   | python3 -c "import sys, json; print(json.load(sys.stdin).get('pending_awakeable') or '')")
 if [ -z "$AID" ]; then
-  echo "   no pending awakeable — has SF already been resumed?"
-  pause
+  echo "   no pending awakeable — SF may have already resumed."
 else
   echo "   $AID"
 fi
@@ -210,61 +142,33 @@ pause
 
 run ./scripts/approve.sh "$AID" approve
 echo
-countdown 3
-echo
-echo " The agent's tick handler resumed from suspend, set Dispatch[SF].active"
-echo " back to true, and continues its monitoring loop. Within 5 seconds"
-echo " Dispatch's next close_epoch will fire and drain the backlog."
-countdown 6
+echo " The agent resumes from suspend, sets Dispatch[SF].active=true, and"
+echo " continues its tick loop. Next close_epoch (≤5s) drains the backlog."
+countdown 8
 
 run ./scripts/show-region.sh SF
 echo
-echo " region_active should be true again; pending_trips_count should be"
-echo " decreasing as the matcher catches up on the backlog."
+echo " active=true, pending draining. T3 shows SF green, Pending falling."
 pause
 
 # ───── wrap ──────────────────────────────────────────────────────────
-section "DONE — what we just saw"
+section "DONE"
 cat <<'EOF'
 
- Live traffic flowing across four regions the entire time. One region went
- unsafe, the RegionSafetyAgent picked it up on its next tick, halted dispatch,
- and suspended on an awakeable. Three other regions kept matching trips,
- completely unaffected. A human resolved the awakeable; the agent resumed,
- dispatch came back online, the queued backlog drained.
+ One region went unsafe; the agent halted it and suspended on an
+ awakeable. The other three regions kept matching the whole time. A
+ human resolved the awakeable; the agent resumed; the backlog drained.
 
- Two SDK primitives plus one awakeable did all of it:
+ All of it on three primitives: call(), send(), and awakeable. Plus
+ delayed self-sends for cadence (Dispatch close_epoch every 5s, Pricing
+ refresh every 10s, RegionSafetyAgent tick every 10s).
 
-   ✓ call()  — synchronous, caller awaits
-       External:  rider request_ride/confirm, driver set_status
-       Internal:  Trip → Offers → ETA + Pricing
-                  Dispatch → Locations.get_position
-                  RegionSafetyAgent → Locations + Features
+ No Kafka, no Redis, no workflow engine, no agent framework. Just
+ Restate plus stateless application code.
 
-   ✓ send()  — asynchronous, fire-and-forget into the Restate log
-       External:  mapping providers → Features.set
-                  driver app → Locations.ping (high-frequency)
-                  human operator → awakeable resolve
-       Internal:  Trip → Dispatch.enqueue_trip (with awakeable token)
-                  Trip → Pricing.note_demand / Locations.accept_trip
-                  Locations → Dispatch.register/deregister_driver
-                  RegionSafetyAgent → Dispatch.set_active
-       Self:      Dispatch close_epoch (5s), Pricing refresh (10s),
-                  RegionSafetyAgent tick (10s) — same primitive, just to
-                  self with a send_delay.
-
-   ✓ awakeable — suspend an invocation on a token
-       RegionSafetyAgent suspends when it halts a region; the same
-       invocation resumes when the operator POSTs the verdict.
-
- Stateless workers, no Kafka, no Redis, no separate workflow engine, no
- agent framework. Just Restate.
-
- Reset for another run:
+ Reset:
    T1:  Ctrl+C, then ./scripts/demo-t1.sh fresh
    T2:  ./scripts/demo-t2.sh
-
- Background sims will be killed when this terminal closes.
 EOF
 echo
-echo " (sims still running in background; they'll be killed when you exit)"
+echo " (background sims will be killed when this terminal exits)"
