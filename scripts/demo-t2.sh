@@ -119,7 +119,7 @@ DRIVER_PID=$!
 .venv/bin/python -m rideco.sim.mapping_events --interval 12 > /tmp/rideco-mapping-sim.log 2>&1 &
 MAPPING_PID=$!
 sleep 3   # let drivers come online + mapping bootstrap RegionSafetyAgents
-.venv/bin/python -m rideco.sim.rider --rate 0.3 > /tmp/rideco-rider-sim.log 2>&1 &
+.venv/bin/python -m rideco.sim.rider --riders 3 --rate 0.1 > /tmp/rideco-rider-sim.log 2>&1 &
 RIDER_PID=$!
 echo "   driver-sim PID:  $DRIVER_PID"
 echo "   mapping-sim PID: $MAPPING_PID"

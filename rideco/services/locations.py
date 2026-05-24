@@ -72,8 +72,15 @@ async def set_status(ctx: restate.ObjectContext, payload: dict) -> dict:
 @locations.handler("accept_trip")
 async def accept_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
     trip_id = payload["trip_id"]
+    region = await ctx.get("region", type_hint=str)
     ctx.set("current_trip_id", trip_id)
     ctx.set("status", DRIVER_EN_ROUTE)
+    # Pull the driver out of the region's idle pool while they're driving.
+    # `set_status(idle, region)` from Trip.complete re-registers them.
+    if region:
+        log("Locations", "→ Dispatch.deregister_driver", flow="send",
+            driver=ctx.key(), region=region)
+        ctx.object_send(dispatch_svc.deregister_driver, key=region, arg={"driver_id": ctx.key()})
     log("Locations", "accept", driver=ctx.key(), trip=trip_id)
     return {"driver_id": ctx.key(), "trip_id": trip_id}
 

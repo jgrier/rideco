@@ -161,6 +161,10 @@ async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
             arg={"status": DRIVER_IDLE, "region": region},
         )
 
+    # Bump the region's completion counter so the dashboard can show it.
+    if region:
+        ctx.object_send(dispatch_svc.note_completion, key=region, arg={})
+
     log("Trip", "completed", trip=trip_id, driver=driver_id)
     return {"trip_id": trip_id, "status": TRIP_COMPLETED}
 

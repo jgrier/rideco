@@ -87,21 +87,36 @@ def _render(snapshot: dict[str, dict], regions: list[str]) -> Table:
     table.add_column("Halts", justify="right")
     table.add_column("Risk", justify="right")
     table.add_column("Epoch", justify="right")
-    table.add_column("Idle drv", justify="right")
+    table.add_column("Idle", justify="right")
     table.add_column("Pending", justify="right")
+    table.add_column("In-flight", justify="right")
+    table.add_column("Done", justify="right")
     table.add_column("Awakeable", no_wrap=True)
+
+    totals = {"idle": 0, "pending": 0, "in_flight": 0, "done": 0, "halts": 0}
 
     for region in regions:
         a = snapshot[region].get("agent") or {}
         d = snapshot[region].get("dispatch") or {}
         if not a and not d:
-            table.add_row(region, Text("offline", style="red"), "—", "—", "—", "—", "—", "—")
+            table.add_row(region, Text("offline", style="red"), *(["—"] * 8))
             continue
         halts = a.get("halts", 0)
         pending = d.get("pending_trips_count", 0)
-        pending_text = Text(str(pending), style="yellow") if pending > 0 else Text("0", style="dim")
         idle = d.get("active_driver_count", 0)
+        in_flight = d.get("in_flight", 0)
+        done = d.get("total_completed", 0)
+
+        totals["idle"] += idle
+        totals["pending"] += pending
+        totals["in_flight"] += in_flight
+        totals["done"] += done
+        totals["halts"] += halts
+
+        pending_text = Text(str(pending), style="yellow") if pending > 0 else Text("0", style="dim")
         idle_text = Text(str(idle), style="red") if idle == 0 else Text(str(idle))
+        done_text = Text(str(done), style="green") if done > 0 else Text("0", style="dim")
+
         table.add_row(
             region,
             _active_cell(a.get("region_active")),
@@ -110,8 +125,24 @@ def _render(snapshot: dict[str, dict], regions: list[str]) -> Table:
             str(d.get("epoch_id", 0)),
             idle_text,
             pending_text,
+            Text(str(in_flight), style="cyan") if in_flight else Text("0", style="dim"),
+            done_text,
             _awakeable_cell(a.get("pending_awakeable")),
         )
+
+    table.add_section()
+    table.add_row(
+        Text("TOTAL", style="bold"),
+        "",
+        Text(str(totals["halts"]), style="red bold" if totals["halts"] else "dim"),
+        "",
+        "",
+        Text(str(totals["idle"])),
+        Text(str(totals["pending"]), style="yellow") if totals["pending"] else Text("0", style="dim"),
+        Text(str(totals["in_flight"]), style="cyan") if totals["in_flight"] else Text("0", style="dim"),
+        Text(str(totals["done"]), style="bold green") if totals["done"] else Text("0", style="dim"),
+        "",
+    )
     return table
 
 

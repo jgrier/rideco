@@ -40,6 +40,8 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
     active = await ctx.get("active", type_hint=bool)
     if active is None:
         active = True
+    matched = (await ctx.get("total_matched", type_hint=int)) or 0
+    completed = (await ctx.get("total_completed", type_hint=int)) or 0
     return {
         "region": ctx.key(),
         "active": active,
@@ -47,7 +49,18 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
         "loop_running": (await ctx.get("loop_running", type_hint=bool)) or False,
         "active_driver_count": len((await ctx.get("active_driver_ids", type_hint=list)) or []),
         "pending_trips_count": len((await ctx.get("pending_trips", type_hint=list)) or []),
+        "total_matched": matched,
+        "total_completed": completed,
+        "in_flight": max(0, matched - completed),
     }
+
+
+@dispatch.handler("note_completion")
+async def note_completion(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
+    """Trip.complete fires this to bump the per-region completion counter."""
+    n = ((await ctx.get("total_completed", type_hint=int)) or 0) + 1
+    ctx.set("total_completed", n)
+    return {"region": ctx.key(), "total_completed": n}
 
 
 @dispatch.handler("set_active")
@@ -185,6 +198,10 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
             "driver_id": a["driver_id"],
             "epoch_id": epoch_id,
         })
+
+    if assignments:
+        prior_matched = (await ctx.get("total_matched", type_hint=int)) or 0
+        ctx.set("total_matched", prior_matched + len(assignments))
 
     ctx.set("pending_trips", leftover)
     ctx.set("epoch_id", epoch_id + 1)
