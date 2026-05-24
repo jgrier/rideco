@@ -11,10 +11,13 @@ The awakeable pattern makes the dependency 1-way: Trip calls Dispatch,
 Dispatch resolves a token Trip handed it. Dispatch never imports Trip.
 """
 
+from datetime import timedelta
+
 import restate
 
 from rideco.shared.log import log
 from rideco.shared.types import (
+    DRIVER_IDLE,
     TRIP_ASSIGNED,
     TRIP_CANCELLED,
     TRIP_COMPLETED,
@@ -28,6 +31,12 @@ from rideco.services import offers as offers_svc
 from rideco.services import pricing as pricing_svc
 
 trip = restate.VirtualObject("Trip")
+
+# Simulated ride duration. After a Trip is assigned, the same Trip VO
+# schedules a self-send to `complete` this many seconds later, which
+# closes out the trip and flips the driver back to idle. This keeps the
+# driver pool turning over during a live demo.
+RIDE_DURATION = timedelta(seconds=20)
 
 
 @trip.handler("request_ride")
@@ -121,6 +130,12 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
         arg={"trip_id": trip_id},
     )
 
+    # Schedule auto-completion so the driver returns to the pool. Real
+    # systems would mark complete from the driver's app on dropoff; for the
+    # demo, a delayed self-send to `complete` simulates ride duration.
+    log("Trip", f"→ self.complete in {int(RIDE_DURATION.total_seconds())}s", flow="self", trip=trip_id)
+    ctx.object_send(complete, key=trip_id, arg={}, send_delay=RIDE_DURATION)
+
     log("Trip", "assigned", trip=trip_id, driver=driver_id, epoch=epoch_id)
     return {"trip_id": trip_id, "status": TRIP_ASSIGNED, "driver_id": driver_id, "epoch_id": epoch_id}
 
@@ -128,8 +143,25 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 @trip.handler("complete")
 async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     trip_id = ctx.key()
+    status = await ctx.get("status", type_hint=str)
+    if status == TRIP_COMPLETED or status == TRIP_CANCELLED:
+        return {"trip_id": trip_id, "status": status}
+
+    driver_id = await ctx.get("assigned_driver_id", type_hint=str)
+    region = await ctx.get("region", type_hint=str)
     ctx.set("status", TRIP_COMPLETED)
-    log("Trip", "completed", trip=trip_id)
+
+    # Flip the driver back to idle so they can be matched again.
+    if driver_id and region:
+        log("Trip", "→ Locations.set_status(idle)", flow="send",
+            trip=trip_id, driver=driver_id)
+        ctx.object_send(
+            locations_svc.set_status,
+            key=driver_id,
+            arg={"status": DRIVER_IDLE, "region": region},
+        )
+
+    log("Trip", "completed", trip=trip_id, driver=driver_id)
     return {"trip_id": trip_id, "status": TRIP_COMPLETED}
 
 

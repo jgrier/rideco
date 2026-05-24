@@ -55,15 +55,17 @@ async def _amain(num_drivers: int, regions: list[str], ping_interval: float) -> 
     log("driver-sim", "starting", drivers=num_drivers,
         regions=",".join(regions), ping_interval=ping_interval)
     tasks = []
+    # Round-robin so each region gets an even share. Random assignment was
+    # leaving some regions short and causing backlog imbalance.
     for i in range(num_drivers):
-        region = random.choice(regions)
+        region = regions[i % len(regions)]
         tasks.append(_driver_loop(f"driver-{i:03d}", region, ping_interval))
     await asyncio.gather(*tasks)
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--drivers", type=int, default=12)
+    p.add_argument("--drivers", type=int, default=16)
     p.add_argument("--regions", default=",".join(all_regions()))
     p.add_argument("--ping-interval", type=float, default=2.0)
     args = p.parse_args()

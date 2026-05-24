@@ -9,9 +9,11 @@ On startup, also bootstraps two per-region background loops:
 - `RegionSafetyAgent.start_monitoring` — the per-region monitor that
   halts dispatch when conditions become unsafe
 
-The sim occasionally produces a "fault drift" — a high accident_density
-+ severe weather emit for one region — so the RegionSafetyAgent has
-something to react to during a live demo.
+By default emits stay within safe ranges (low accident_density, mild
+weather). Use `./scripts/spike-region.sh <region>` to deterministically
+push one region into the halt zone. The previous organic-drift feature
+was removed because, given enough demo time, it caused every region to
+halt, leaving the system fully jammed.
 """
 
 import argparse
@@ -24,12 +26,15 @@ from rideco.shared.types import ENTITY_REGION, feature_key
 from rideco.sim._ingress import send_object
 
 
-WEATHER_OPTIONS = ["clear", "clear", "clear", "rain_light", "rain_heavy", "fog"]
+# Safe-only weather options. The composite risk scorer only adds points for
+# "snow", "rain_heavy", or "fog"; we keep those out of the rotation (except
+# light fog, which alone can't cross the halt threshold) so organic emits
+# never trigger a halt on their own.
+WEATHER_OPTIONS = ["clear", "clear", "clear", "clear", "clear", "rain_light"]
 
-# Probability per emit that this region's reading is a "fault drift" — pushed
-# into unsafe territory. With ~4 regions emitting every interval, gives
-# roughly one organic halt every few minutes.
-FAULT_DRIFT_PROB = 0.05
+# Hard cap on accident_density. The agent's risk scorer adds 0.5 for
+# accidents >= 0.5; we stay strictly below that.
+MAX_ACCIDENTS = 0.35
 
 
 async def _publish(key: str, value) -> None:
@@ -48,14 +53,9 @@ async def _bootstrap(regions: list[str]) -> None:
 
 
 async def _emit_region(region: str) -> None:
-    if random.random() < FAULT_DRIFT_PROB:
-        # Fault drift — conditions pushed into the agent's halt range.
-        weather = random.choice(["snow", "rain_heavy"])
-        accidents = round(random.uniform(0.65, 0.9), 2)
-        log("mapping", "FAULT DRIFT", region=region, weather=weather, accidents=accidents)
-    else:
-        weather = random.choice(WEATHER_OPTIONS)
-        accidents = round(random.betavariate(2, 8), 2)
+    # Safe ranges only. Use spike-region.sh to push a region unsafe on demand.
+    weather = random.choice(WEATHER_OPTIONS)
+    accidents = round(random.uniform(0.0, MAX_ACCIDENTS), 2)
     await _publish(feature_key(ENTITY_REGION, region, "weather"), weather)
     await _publish(feature_key(ENTITY_REGION, region, "accident_density"), accidents)
 

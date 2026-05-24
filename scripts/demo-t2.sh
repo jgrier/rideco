@@ -114,7 +114,7 @@ echo " inter-service activity."
 pause
 
 echo " starting sims..."
-.venv/bin/python -m rideco.sim.driver --drivers 8 > /tmp/rideco-driver-sim.log 2>&1 &
+.venv/bin/python -m rideco.sim.driver --drivers 16 > /tmp/rideco-driver-sim.log 2>&1 &
 DRIVER_PID=$!
 .venv/bin/python -m rideco.sim.mapping_events --interval 12 > /tmp/rideco-mapping-sim.log 2>&1 &
 MAPPING_PID=$!
