@@ -245,7 +245,8 @@ simply don't need it.
 
 ## How to run the demo
 
-Two terminals plus a browser tab at `http://localhost:9070` (Restate Web UI).
+Three terminals plus a browser tab at `http://localhost:9070`
+(Restate Web UI).
 
 Prereqs: Python 3.13 (or 3.11+), Docker, the
 [`restate` CLI](https://docs.restate.dev/get_started/install), and `uv` (or
@@ -257,34 +258,46 @@ uv venv --python 3.13 .venv
 .venv/bin/python -m pip install -e .
 ```
 
-**Terminal 1** — the show. Logs scroll here as the demo runs.
+**Terminal 1** — the show. Inter-service log scrolls here as the demo
+runs; every cross-service hop is tagged `[sync→]` / `[send→]` / `[self→]`.
 
 ```bash
 ./scripts/demo-t1.sh fresh
 ```
 
 Pauses for ENTER, wipes Restate state, brings up Restate, starts hypercorn.
-When the Phase 3 fix step asks for it: `Ctrl+C` here, edit
-`rideco/services/features.py`, then `./scripts/demo-t1.sh restart`.
 
-**Terminal 2** — guided walkthrough.
+**Terminal 2** — guided walkthrough. Three phases, ENTER between every step.
 
 ```bash
 ./scripts/demo-t2.sh
 ```
 
-Three phases, ENTER between every step. Each step explains what's happening,
-what to look for in Terminal 1, and where to look in the Restate Web UI:
-
-1. **Quiet trip** — one rider request end-to-end; the full architecture visible in the log.
+1. **System alive** — three sims (rider, driver, mapping) start; constant traffic flows across all four regions.
 2. **Region halts (human-in-the-loop)** — you force a region's features into unsafe territory; the RegionSafetyAgent picks it up on its next tick, halts dispatch for that region, and suspends on an awakeable; other regions keep matching unaffected.
 3. **Human approves** — you POST a verdict; the same invocation resumes; dispatch comes back; the queued backlog drains.
 
+**Terminal 3** — live dashboard. Open this once T2 is past Phase 1
+(sims need to be running so there's data to show).
+
+```bash
+./scripts/watch-regions.sh
+```
+
+One row per region, refreshing every second: active/halted, halts count,
+risk score, current dispatch epoch, idle drivers, pending trips, trips
+in flight, completed trips, and the pending awakeable token when the
+agent is suspended. A TOTAL row at the bottom rolls everything up. Watch
+this while you spike a region in T2 — you'll see Risk turn yellow then
+red, Active flip to HALTED, Pending climb, the awakeable populate. After
+you approve, Active goes back to green, Pending drains, Done resumes
+climbing.
+
 ## Poke at the running system
 
-The demo is more interesting if you don't just watch it — go look at the
-running state from a third terminal while T1 streams logs and T2 walks
-the script.
+The dashboard in T3 is one window into the running system; there are
+several others. The demo is more interesting if you don't just watch
+it — open a fourth terminal and start poking.
 
 **Restate Web UI — `http://localhost:9070`.** The best single window into
 the system.
