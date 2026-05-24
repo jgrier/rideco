@@ -8,7 +8,7 @@ the role of external clients (RiderSim, DriverSim, MappingSim, plus a
 SimControl fan-out service). All state, durability, retries, ordering,
 and scheduling live inside Restate.
 
-The repo is a reproducible demo. Two terminals, a few scripts, no Kafka, no
+The repo is a reproducible demo. Three terminals, a few scripts, no Kafka, no
 Redis, no separate workflow engine, no agent framework. Just Restate plus
 stateless application code.
 
@@ -452,8 +452,7 @@ restate services list                          # all registered services
 | Script | Purpose |
 |---|---|
 | `./scripts/demo-t1.sh [fresh\|restart]` | Terminal 1 driver (fresh wipes state, restart picks up code changes) |
-| `./scripts/demo-t2.sh` | Terminal 2 guided 5-phase walkthrough |
-| `./scripts/register.sh` | Register the Python deployment with Restate |
+| `./scripts/demo-t2.sh` | Terminal 2 guided 3-phase walkthrough |
 | `./scripts/reset.sh` | Wipe Restate state and restart the container |
 | `./scripts/serve-all.sh` | Launch all 12 services as separate hypercorn processes (foreground, Ctrl+C tears all down) |
 | `./scripts/register-all.sh` | Register all 12 deployments with Restate |

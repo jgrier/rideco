@@ -63,12 +63,13 @@ EOF
 pause
 
 # ───── boot ──────────────────────────────────────────────────────────
-section "BOOTSTRAP — register Python services with Restate"
+section "BOOTSTRAP — register the twelve services with Restate"
 echo
 echo " Restate's ingress (:8080) routes every external call into the right"
-echo " handler. register.sh tells Restate where to find the eight services."
+echo " handler. register-all.sh tells Restate where to find each of the"
+echo " twelve services (one HTTP endpoint per service, ports 9080-9091)."
 pause
-run ./scripts/register.sh
+run ./scripts/register-all.sh
 pause
 
 # ───── PHASE 1 ───────────────────────────────────────────────────────
