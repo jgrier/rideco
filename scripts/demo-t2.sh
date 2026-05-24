@@ -195,7 +195,17 @@ echo
 echo " You're the human safety operator. You've reviewed the situation"
 echo " and decide SF is OK to resume. POST a verdict to the awakeable."
 echo
-read -p " Paste the pending_awakeable id: " AID
+echo " Reading the suspended awakeable id straight off the agent's state"
+echo " (this is what the dashboard's AWAKEABLE column shows):"
+AID=$(curl -s -X POST http://localhost:8080/RegionSafetyAgent/SF/get \
+  -H 'Content-Type: application/json' -d '{}' \
+  | python3 -c "import sys, json; print(json.load(sys.stdin).get('pending_awakeable') or '')")
+if [ -z "$AID" ]; then
+  echo "   no pending awakeable — has SF already been resumed?"
+  pause
+else
+  echo "   $AID"
+fi
 pause
 
 run ./scripts/approve.sh "$AID" approve
