@@ -87,146 +87,139 @@ arrows in the architecture diagram; they're implicit.
 
 ## Per-service breakdown
 
-How each service is invoked, what state it owns, what it calls.
-
-Two patterns underneath every interaction:
-
-- **`call()`** (`[sync→]` in logs) — caller awaits. Writes to the Restate log first, then blocks until the worker completes.
-- **`send()`** (`[send→]` in logs) — fire-and-forget into the Restate log. Returns immediately. Delayed sends (`[self→]` when targeting self) replace external schedulers.
+How each service is shaped, what it owns, what it calls. Every row in
+every "Calls" cell goes through Restate — `call()` is sync (caller
+awaits), `send()` is async fire-and-forget into the Restate log,
+self-`send()` with a delay replaces external schedulers.
 
 ### Trip — Stateful microservice
 
-Virtual Object keyed by `trip_id`. One per ride.
+The only orchestrator. `confirm` is a long-running operation: creates an
+awakeable, sends one-way to `Dispatch.enqueue_trip` carrying the awakeable
+name, and **suspends** on the awakeable. When Dispatch's next matching
+round resolves the awakeable with a `driver_id`, the same `confirm`
+invocation resumes, records the assignment, and fans out to Locations.
+After assignment, schedules a delayed self-send to `complete` that flips
+the driver back to idle when the simulated ride ends. Trip → Dispatch is
+a one-way dependency; Dispatch never imports Trip.
 
-**Receives:**
-- Sync HTTP from rider/driver apps: `request_ride`, `confirm`, `cancel`, `complete`
-- Shared HTTP read: `get`
+| | |
+|---|---|
+| **Domain** | Stateful microservices + Durable execution |
+| **Shape** | Virtual Object keyed by `trip_id` |
+| **Receives** | `call()`: `request_ride`, `confirm`, `cancel`, `complete` &nbsp;·&nbsp; shared read: `get` |
+| **State** | `rider_id`, `origin`, `destination`, `region`, `status`, `offer`, `multiplier`, `assigned_driver_id`, `epoch_id`, `pending_match_awakeable` |
+| **Calls** | `call()` → `Offers.generate` &nbsp;·&nbsp; `send()` → `Pricing.note_demand`, `Dispatch.enqueue_trip` (with awakeable token), `Locations.accept_trip` &nbsp;·&nbsp; self-`send()` → `complete` (delayed) |
 
-**State:** `rider_id`, `origin`, `destination`, `region`, `status`, `offer`, `multiplier`, `assigned_driver_id`, `epoch_id`, `pending_match_awakeable`.
+### Offers — Stateful microservice
 
-**Calls:**
-- Sync RPC → `Offers.generate`
-- `send()` → `Pricing.note_demand`, `Dispatch.enqueue_trip` (carries an awakeable token), `Locations.accept_trip`
+Pure synthesis layer. Fans into ETA + Pricing in sequence, builds three
+candidate offers per car class (Standard, XL, Lux), selects Standard.
 
-Trip is the only orchestrator. `confirm` is a long-running operation: it creates an awakeable, sends one-way to `Dispatch.enqueue_trip` carrying the awakeable name, and **suspends** on the awakeable. When Dispatch's next matching round resolves the awakeable with a `driver_id`, the same `confirm` invocation resumes, records the assignment, and fans out to Locations. Trip → Dispatch is a one-way dependency; Dispatch never imports Trip.
+| | |
+|---|---|
+| **Domain** | Stateful microservices |
+| **Shape** | Plain service (no per-key state) |
+| **Receives** | `call()` from Trip: `generate` |
+| **State** | — |
+| **Calls** | `call()` → `ETA.estimate`, `Pricing.quote` |
 
-### Offers — Stateful microservice (stateless service)
+### ETA — Stateful microservice
 
-**Receives:** sync RPC from Trip during `request_ride`.
+Arrival-time predictor. Computes haversine distance, adjusts by region
+features, returns ETA + reliability score.
 
-**State:** none.
-
-**Calls:** Sync RPC → `ETA.estimate`, `Pricing.quote`.
-
-Pure synthesis layer. Fans into ETA + Pricing in sequence, builds three candidate offers per car class (Standard, XL, Lux), selects Standard.
-
-### ETA — Stateful microservice (stateless service)
-
-**Receives:** sync RPC from Offers during `generate`.
-
-**State:** none.
-
-**Calls:** Sync RPC → `Features.get` for region weather + accident_density.
-
-Reliable arrival prediction. Computes haversine distance, adjusts by region features, returns ETA + reliability score.
+| | |
+|---|---|
+| **Domain** | Stateful microservices |
+| **Shape** | Plain service (no per-key state) |
+| **Receives** | `call()` from Offers: `estimate` |
+| **State** | — |
+| **Calls** | `call()` → `Features.get` (region `weather`, `accident_density`) |
 
 ### Pricing — Stateful microservice
 
-Virtual Object keyed by `region`.
+Per-region surge multiplier. The refresh loop is a delayed call to self
+— no external scheduler.
 
-**Receives:**
-- Sync RPC from Offers: `quote`
-- Sends from Trip (`note_demand`) and driver-sim (`note_supply`)
-- Self-scheduled `refresh` (delayed call to self every 10s)
-
-**State:** `multiplier`, `supply_count`, `demand_count`, `last_refresh_ms`.
-
-**Calls:** Sync RPC → `Features.get`. Self-send → `refresh` in 10s.
-
-Surge multiplier per region. The refresh loop is a delayed call to self — no external scheduler.
+| | |
+|---|---|
+| **Domain** | Stateful microservices + Durable execution |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `call()` from Offers: `quote` &nbsp;·&nbsp; `send()`: `note_demand` (Trip), `note_supply` (driver-sim) &nbsp;·&nbsp; self-scheduled: `refresh` |
+| **State** | `multiplier`, `supply_count`, `demand_count`, `last_refresh_ms` |
+| **Calls** | `call()` → `Features.get` &nbsp;·&nbsp; self-`send()` → `refresh` in 10s |
 
 ### Locations — Event-driven app + Serving
 
-Virtual Object keyed by `driver_id`.
+Per-driver position + status. Pings are fire-and-forget; the smoothing
+(mocked here as an exponential moving average; production systems would
+use a Marginalized Particle Filter) happens inside the handler. Position
+reads via the shared `get_position` handler are the serving path.
 
-**Receives:**
-- Driver app pings (one-way send): `ping`
-- Driver app status changes via `call()`: `set_status`
-- Send from Trip on assignment: `accept_trip`
-- Sync shared read from Dispatch + RegionSafetyAgent: `get_position`
-
-**State:** `status`, `matched_lat`, `matched_lng`, `last_ping_ms`, `region`, `current_trip_id`.
-
-**Calls:** Sends → `Dispatch.register_driver` / `deregister_driver` on status transitions.
-
-Per-driver state. Pings are fire-and-forget; the smoothing (mocked here as an exponential moving average; production systems use a Marginalized Particle Filter) happens inside the handler. Position reads via the shared `get_position` handler are the serving path.
+| | |
+|---|---|
+| **Domain** | Event-driven apps + Serving |
+| **Shape** | Virtual Object keyed by `driver_id` |
+| **Receives** | `send()`: `ping` (driver app), `accept_trip` (Trip) &nbsp;·&nbsp; `call()`: `set_status` &nbsp;·&nbsp; shared read: `get_position` |
+| **State** | `status`, `matched_lat`, `matched_lng`, `last_ping_ms`, `region`, `current_trip_id` |
+| **Calls** | `send()` → `Dispatch.register_driver` / `deregister_driver` on status transitions |
 
 ### Features — Event-driven app + Serving
 
-Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}`.
+Online feature store. External providers `send()` writes; Restate journals
+each write and invokes `Features.set` on the right key. Internal readers
+`call()` `get` to retrieve the current value.
 
-**Receives:**
-- `send()` from external mapping providers (and internal callers): `set`
-- `call()` from ETA, Pricing, Dispatch, RegionSafetyAgent (shared read): `get`
+| | |
+|---|---|
+| **Domain** | Event-driven apps + Serving |
+| **Shape** | Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}` |
+| **Receives** | `send()` from external providers + internal callers: `set` &nbsp;·&nbsp; shared read: `get` |
+| **State** | `value`, `version`, `last_updated_ms` |
+| **Calls** | — |
 
-**State:** `value`, `version`, `last_updated_ms`.
+### Dispatch — Durable execution
 
-**Calls:** nothing.
+Long-running matcher. Each epoch: snapshot pending trips + driver
+positions, greedy nearest-driver match, resolve each matched trip's
+awakeable token with its `driver_id`. Unmatched trips carry forward.
+Dispatch has no knowledge of Trip's state machine — it just resolves
+tokens it was handed. When RegionSafetyAgent halts the region, the
+epoch loop keeps ticking but matching is skipped; trips queue and drain
+on resume.
 
-Online feature store. External providers `send()` events to Restate; Restate journals the write and invokes `Features.set` on the right key. Internal readers `call()` `get` to retrieve the current value.
+| | |
+|---|---|
+| **Domain** | Durable execution |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `send()`: `enqueue_trip` (Trip, with awakeable token), `register_driver` / `deregister_driver` (Locations), `set_active` (RegionSafetyAgent) &nbsp;·&nbsp; self-scheduled: `close_epoch` every 5s |
+| **State** | `active`, `active_driver_ids`, `pending_trips` (each with its awakeable token), `epoch_id`, `loop_running` |
+| **Calls** | `call()` → `Locations.get_position` (per active driver at epoch close) &nbsp;·&nbsp; `ctx.resolve_awakeable` per matched trip — Dispatch's only outbound communication &nbsp;·&nbsp; self-`send()` → `close_epoch` in 5s |
 
-### Dispatch — Durable Execution
+### RegionSafetyAgent — AI agent infrastructure
 
-Virtual Object keyed by `region`. Pure event-driven — every handler is a send.
-
-**Receives (all one-way):**
-- `enqueue_trip` from Trip (carries the trip's awakeable token)
-- `register_driver` / `deregister_driver` from Locations
-- Self-scheduled `close_epoch` every 5s
-
-**State:** `active_driver_ids`, `pending_trips` (with each trip's awakeable token), `epoch_id`, `loop_running`.
-
-**Calls:**
-- Sync RPC → `Locations.get_position` (per active driver at epoch close)
-- `ctx.resolve_awakeable` per matched trip — Dispatch's only outbound communication. It never calls Trip directly.
-- Self-send → `close_epoch` in 5s
-
-Long-running matcher. Each epoch: snapshot pending trips, snapshot driver positions, greedy nearest-driver match, resolve the awakeable token of each matched trip with the driver_id. Unmatched trips carry forward to the next epoch. Dispatch has no knowledge of Trip's state machine — it just resolves tokens it was handed.
-
-### RegionSafetyAgent — AI Agent infrastructure
-
-Virtual Object keyed by `region`. One agent per region; runs continuously
-in the background while the system is up.
-
-**Receives:**
-- `send()` from mapping-events sim on bootstrap: `start_monitoring`
-- Self-scheduled `tick` (delayed call every 10s)
-- External HTTP awakeable resolve from human operator
-- `force_resume` (out-of-band manual override)
-- `call()` from inspectors (shared read): `get`
-
-**State:** `active`, `region_active`, `ticks`, `halts`, `last_score`, `last_rationale`, `last_verdict`, `pending_awakeable`.
-
-**Calls:**
-- `call()` → `Features.get` for the region's `weather` and `accident_density`
-- `ctx.run_typed` for the composite risk score — journaled so replays are deterministic
-- `send()` → `Dispatch.set_active(false)` to halt the region; `Dispatch.set_active(true)` on approve
-- `ctx.awakeable()` to suspend on a human verdict
-- Self-`send()` → `tick` in 10s
-
-**What it does.** Every 10s, reads its region's features, computes a
-composite risk via the mocked LLM, and decides whether to halt dispatch.
-On halt: `send()`s `Dispatch.set_active(false)`, creates an awakeable,
-suspends. A human resolves the awakeable with `approve` (region resumes,
-`Dispatch.set_active(true)`) or `deny` (region stays halted; the agent's
-next tick still monitors but doesn't re-escalate until something resumes
-the region). Trips in the halted region queue in Dispatch's
-`pending_trips` and drain on resume.
-
-This is the AI-agent showcase: per-key state, mocked LLM via `ctx.run`,
-awakeable for human-in-the-loop gating, all on Restate's durable runtime.
-Per-region — one agent per region. SF halts in isolation; NYC, LA, SEA
+Per-region safety monitor. Every 10s, reads its region's features,
+computes a composite risk via the mocked LLM, and decides whether to
+halt dispatch. On halt: `send()`s `Dispatch.set_active(false)`, creates
+an awakeable, suspends. A human resolves the awakeable with `approve`
+(region resumes, `Dispatch.set_active(true)`) or `deny` (stays halted;
+ticks continue but no re-escalation until something resumes the region).
+Trips in the halted region queue in Dispatch's `pending_trips` and drain
+on resume. One agent per region — SF can be halted while NYC, LA, SEA
 keep matching.
+
+| | |
+|---|---|
+| **Domain** | AI agent infrastructure |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `send()`: `start_monitoring` (mapping-sim bootstrap), `force_resume` (manual override) &nbsp;·&nbsp; self-scheduled: `tick` every 10s &nbsp;·&nbsp; external awakeable resolve from human operator &nbsp;·&nbsp; shared read: `get` |
+| **State** | `active`, `region_active`, `ticks`, `halts`, `last_score`, `last_rationale`, `last_verdict`, `pending_awakeable` |
+| **Calls** | `call()` → `Features.get` (region `weather`, `accident_density`) &nbsp;·&nbsp; `ctx.run_typed` for the composite risk score (journaled, deterministic on replay) &nbsp;·&nbsp; `send()` → `Dispatch.set_active(false)` to halt, `Dispatch.set_active(true)` on approve &nbsp;·&nbsp; `ctx.awakeable()` to suspend on a human verdict &nbsp;·&nbsp; self-`send()` → `tick` in 10s |
+
+The AI-agent showcase: per-key state, mocked LLM via `ctx.run`, awakeable
+for human-in-the-loop gating, all on Restate's durable runtime. Same
+primitives the other seven services use, applied to LLM-driven decisions.
 
 ## Why no Kafka
 
@@ -284,8 +277,82 @@ Three phases, ENTER between every step. Each step explains what's happening,
 what to look for in Terminal 1, and where to look in the Restate Web UI:
 
 1. **Quiet trip** — one rider request end-to-end; the full architecture visible in the log.
-2. **Region halts (human-in-the-loop)** — a region's features drift into unsafe territory (or you force a spike); the RegionSafetyAgent halts dispatch for that region and suspends on an awakeable; other regions keep matching unaffected.
+2. **Region halts (human-in-the-loop)** — you force a region's features into unsafe territory; the RegionSafetyAgent picks it up on its next tick, halts dispatch for that region, and suspends on an awakeable; other regions keep matching unaffected.
 3. **Human approves** — you POST a verdict; the same invocation resumes; dispatch comes back; the queued backlog drains.
+
+## Poke at the running system
+
+The demo is more interesting if you don't just watch it — go look at the
+running state from a third terminal while T1 streams logs and T2 walks
+the script.
+
+**Restate Web UI — `http://localhost:9070`.** The best single window into
+the system.
+
+- *Services* — every registered service and handler, signatures, recent invocations.
+- *Invocations* — live + historical. `running` is currently executing; `scheduled` is a delayed self-send waiting to fire (you'll always see `Dispatch.close_epoch`, `Pricing.refresh`, and `RegionSafetyAgent.tick` queued per region); `suspended` is paused on an awakeable (the per-region safety agent, or any `Trip.confirm` waiting on a match).
+- *State* — per-VO key/value inspector. Click an object, click a key, see the journaled state.
+
+**Shell views.** A few scripts pretty-print what the UI shows, useful
+when you want to script around them.
+
+```bash
+./scripts/watch-regions.sh                      # live dashboard, updates in place
+./scripts/show-regions.sh                       # one-shot snapshot of all four regions
+./scripts/show-region.sh SF                     # one region in detail
+./scripts/show-trip.sh trip-abc123              # Trip VO + status legend
+./scripts/show-invocations.sh                   # restate invocations list
+```
+
+`watch-regions.sh` is the most useful one to keep open in a side
+terminal during the demo — you can literally see halts flip and pending
+queues drain in real time.
+
+**Direct HTTP — same ingress the sims use.** Any handler is reachable via
+Restate's ingress at `:8080`. The URL pattern is `/{Service}/{key}/{handler}`
+for virtual objects (drop `{key}` for plain services), append `/send` for
+fire-and-forget.
+
+```bash
+# Read a Trip VO's full state
+curl -s -X POST http://localhost:8080/Trip/trip-abc123/get \
+  -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
+
+# Read a region's safety agent
+curl -s -X POST http://localhost:8080/RegionSafetyAgent/SF/get \
+  -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
+
+# Read a Features VO directly by composite key
+curl -s -X POST 'http://localhost:8080/Features/region:SF:weather/get' \
+  -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
+
+# Force a driver back to idle (call() — caller awaits)
+curl -s -X POST http://localhost:8080/Locations/driver-001/set_status \
+  -H 'Content-Type: application/json' -d '{"status":"idle","region":"SF"}'
+
+# Fire-and-forget — append /send
+curl -s -X POST http://localhost:8080/Pricing/SF/refresh/send \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+Inspectors are just `call()`s like any other handler — each VO exposes
+a `shared` (read-only) `get`. The UI, the shell scripts, and your own
+curl are all hitting the same Restate ingress.
+
+**Restate CLI.** The `restate` CLI talks to the admin API at `:9070`.
+
+```bash
+restate invocations list                       # everything currently in flight
+restate invocations list --status suspended    # who's parked on an awakeable
+restate services list                          # all registered services
+```
+
+**Things worth trying.**
+
+- Stop hypercorn mid-trip (`./scripts/stop.sh`), wait, restart with `./scripts/demo-t1.sh restart`. The pending `Trip.confirm` invocations resume from where they suspended; the matching loop picks back up. No state lost.
+- `./scripts/spike-region.sh NYC` while SF is already halted. Two regions queued; one human verdict per region to drain.
+- Write a feature directly (`./scripts/set-feature.sh SF accident_density 0.9`) and watch the next `RegionSafetyAgent[SF].tick` catch it.
+- In the Web UI, find a `RegionSafetyAgent.tick` invocation in *suspended* state, click through to its journal — every step is recorded, including the awakeable it's waiting on.
 
 ## Scripts reference
 
@@ -301,7 +368,9 @@ what to look for in Terminal 1, and where to look in the Restate Web UI:
 | `./scripts/make-trip-send.sh <trip_id> <region>` | Same but fire-and-forget request_ride |
 | `./scripts/complete-trip.sh <trip_id>` | Mark a trip complete |
 | `./scripts/spike-region.sh [region]` | Force a region's features into unsafe territory (triggers RegionSafetyAgent to halt) |
-| `./scripts/show-region.sh [region]` | Pretty-print a region's RegionSafetyAgent + Dispatch state |
+| `./scripts/show-region.sh [region]` | Pretty-print one region's RegionSafetyAgent + Dispatch state |
+| `./scripts/show-regions.sh` | At-a-glance table across all four regions (active?, halts, risk, drivers/pending, awakeable) |
+| `./scripts/watch-regions.sh` | Live dashboard — same columns, updates in place every second |
 | `./scripts/cancel-trip.sh <trip_id>` | Cancel a trip |
 | `./scripts/set-feature.sh <region> <feature> <value>` | Write a feature directly via HTTP |
 | `./scripts/poison.sh [region]` | Publish the POISON sentinel into Features for that region |

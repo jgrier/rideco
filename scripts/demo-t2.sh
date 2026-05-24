@@ -157,12 +157,12 @@ pause
 # ───── PHASE 2 ───────────────────────────────────────────────────────
 section "PHASE 2 — a region goes unsafe"
 echo
-echo " The mapping-sim has a small probability per emit of producing a"
-echo " 'fault drift' — high accident_density + adverse weather. The"
-echo " RegionSafetyAgent for that region will catch it on its next tick"
-echo " and halt dispatch."
+echo " The RegionSafetyAgent ticks every 10s, reads its region's features"
+echo " (weather, accident_density), computes a composite risk score, and"
+echo " halts dispatch when the score crosses the threshold."
 echo
-echo " For the demo, we'll FORCE this in SF to be deterministic:"
+echo " mapping-sim emits stay in safe ranges on their own, so we'll force"
+echo " SF into unsafe territory deterministically:"
 pause
 
 run ./scripts/spike-region.sh SF
