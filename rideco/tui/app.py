@@ -214,23 +214,26 @@ class ServicesTable(DataTable):
         self.update_cell(svc.name, "last_log", tail or "")
 
 
-HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3c — log streaming)[/dim]
+HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3d — full command surface)[/dim]
 
-[bold cyan]Keys[/bold cyan]
+[bold cyan]Quit / help / refresh[/bold cyan]
   [yellow]q[/yellow]    quit (tears everything down)
   [yellow]?[/yellow]    show this help
   [yellow]r[/yellow]    refresh now
-  [yellow]↑/↓[/yellow]  on the Services table, navigate; this pane shows that
-        service's live log tail
+
+[bold cyan]Regions table  ([italic]↑/↓ to select a region[/italic])[/bold cyan]
+  [yellow]s[/yellow]    spike the selected region (25s of unsafe features
+        — the RegionSafetyAgent will halt it)
+  [yellow]a[/yellow]    approve the selected region's pending awakeable
+        (resumes dispatch)
+
+[bold cyan]Services table  ([italic]↑/↓ to select; bottom pane tails its log[/italic])[/bold cyan]
+  [yellow]k[/yellow]    kill the selected service process
+  [yellow]b[/yellow]    boot the selected service (re-registers with Restate)
 
 [bold cyan]What's running[/bold cyan]
   The TUI owns restate-server, the twelve service hypercorns, and
   the sim fleet. Tables above are live (1s poll).
-
-[bold cyan]Still to come[/bold cyan]
-  • k / b   kill / boot the selected service
-  • s / a   spike a region / approve a halted region
-  • demo mode with scripted phases
 """
 
 
@@ -289,6 +292,10 @@ class RidecoApp(App):
         Binding("q", "quit_clean", "Quit"),
         Binding("?", "help", "Help"),
         Binding("r", "refresh_now", "Refresh"),
+        Binding("s", "spike_region", "Spike"),
+        Binding("a", "approve_region", "Approve"),
+        Binding("k", "kill_service", "Kill svc"),
+        Binding("b", "boot_service", "Boot svc"),
     ]
 
     def __init__(self, auto_boot: bool = True) -> None:
@@ -299,6 +306,7 @@ class RidecoApp(App):
         self._tearing_down = False
         self._mode: str = MODE_HELP
         self._selected_service: Optional[str] = None
+        self._selected_region: Optional[str] = None
         # The ServicesTable auto-emits a RowHighlighted for row 0 on mount.
         # We swallow that so the bottom pane stays on the help screen until
         # the user actually arrows into a service.
@@ -403,26 +411,32 @@ class RidecoApp(App):
 
     @on(DataTable.RowHighlighted)
     def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        """When the user arrows around the Services table, the bottom pane
-        flips to that service's live log tail. Highlighting in the Regions
-        table doesn't change the bottom mode."""
-        if not isinstance(event.control, ServicesTable):
-            return
-        if not self._initial_highlight_consumed:
-            self._initial_highlight_consumed = True
-            return
+        """Track which row in which table the user is on.
+
+        Services table: also flip the bottom pane to that service's live
+        log tail. Regions table: just remember the selection so s/a
+        target it (no bottom-pane change)."""
         if event.row_key is None or event.row_key.value is None:
             return
-        name = event.row_key.value
-        svc = self.pm.services.get(name)
-        if svc is None:
+
+        if isinstance(event.control, RegionsTable):
+            self._selected_region = event.row_key.value
             return
-        self._selected_service = name
-        self._mode = MODE_LOG
-        try:
-            self.query_one(BottomPane).show_log(svc)
-        except Exception:
-            pass
+
+        if isinstance(event.control, ServicesTable):
+            if not self._initial_highlight_consumed:
+                self._initial_highlight_consumed = True
+                return
+            name = event.row_key.value
+            svc = self.pm.services.get(name)
+            if svc is None:
+                return
+            self._selected_service = name
+            self._mode = MODE_LOG
+            try:
+                self.query_one(BottomPane).show_log(svc)
+            except Exception:
+                pass
 
     # ───── actions ───────────────────────────────────────────────────
 
@@ -433,6 +447,86 @@ class RidecoApp(App):
     async def action_refresh_now(self) -> None:
         await self._refresh_regions()
         await self._refresh_services()
+
+    # ───── command surface ───────────────────────────────────────────
+
+    def _region_target(self) -> Optional[str]:
+        return self._selected_region or "SF"
+
+    def action_spike_region(self) -> None:
+        region = self._region_target()
+        if region is None:
+            self.notify("no region selected", severity="warning")
+            return
+        self.notify(f"spiking {region} (25s sustained)...")
+        asyncio.create_task(self._spike(region))
+
+    async def _spike(self, region: str) -> None:
+        end = asyncio.get_event_loop().time() + 25.0
+        wrote = 0
+        while asyncio.get_event_loop().time() < end:
+            try:
+                await self._client.post(
+                    f"{INGRESS}/Features/region:{region}:accident_density/set",
+                    json={"value": 0.85}, timeout=2.0,
+                )
+                await self._client.post(
+                    f"{INGRESS}/Features/region:{region}:weather/set",
+                    json={"value": "rain_heavy"}, timeout=2.0,
+                )
+                wrote += 1
+            except Exception as e:
+                self.notify(f"spike write error: {e}", severity="error")
+                return
+            await asyncio.sleep(3.0)
+        self.notify(f"spike of {region} done ({wrote} writes)")
+
+    async def action_approve_region(self) -> None:
+        region = self._region_target()
+        if region is None:
+            self.notify("no region selected", severity="warning")
+            return
+        snap = await fetch_region_snapshot(self._client, region)
+        aid = (snap.get("agent") or {}).get("pending_awakeable")
+        if not aid:
+            self.notify(f"{region} has no pending awakeable", severity="warning")
+            return
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/restate/awakeables/{aid}/resolve",
+                json={"verdict": "approve", "reviewer": "tui"},
+                timeout=5.0,
+            )
+            r.raise_for_status()
+            self.notify(f"approved {region} — agent resuming")
+        except Exception as e:
+            self.notify(f"approve failed: {e}", severity="error")
+
+    async def action_kill_service(self) -> None:
+        name = self._selected_service
+        if not name:
+            self.notify("select a service in the Services table first",
+                        severity="warning")
+            return
+        self.notify(f"killing {name}...")
+        await self.pm.stop_service(name)
+        self.notify(f"{name} stopped")
+
+    async def action_boot_service(self) -> None:
+        name = self._selected_service
+        if not name:
+            self.notify("select a service in the Services table first",
+                        severity="warning")
+            return
+        self.notify(f"booting {name}...")
+        await self.pm.start_service(name)
+        # Give the hypercorn a moment to bind, then re-register with restate.
+        await asyncio.sleep(2.0)
+        try:
+            await self.pm.register_one(name)
+            self.notify(f"{name} up + registered")
+        except Exception as e:
+            self.notify(f"register {name} failed: {e}", severity="error")
 
 
 def main() -> None:

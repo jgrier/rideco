@@ -171,6 +171,13 @@ class ProcessManager:
                 f"http://host.docker.internal:{port}",
             )
 
+    async def register_one(self, name: str) -> None:
+        port = self.services[name].port
+        await self._run_cmd(
+            "restate", "-y", "deployments", "register", "--force",
+            f"http://host.docker.internal:{port}",
+        )
+
     async def sim_start_all(self, **kwargs) -> None:
         async with httpx.AsyncClient() as c:
             await c.post(
