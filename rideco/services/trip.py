@@ -26,6 +26,7 @@ from rideco.shared.types import (
     TRIP_REQUESTED,
 )
 from rideco.services import dispatch as dispatch_svc
+from rideco.services import features as features_svc
 from rideco.services import locations as locations_svc
 from rideco.services import offers as offers_svc
 from rideco.services import pricing as pricing_svc
@@ -66,6 +67,16 @@ async def request_ride(ctx: restate.ObjectContext, payload: dict) -> dict:
 
     log("Trip", "→ Pricing.note_demand", flow="send", region=region)
     ctx.object_send(pricing_svc.note_demand, key=region, arg={})
+
+    # Emit the request as an event into Features' rolling window.
+    # Pricing.refresh reads this stream's rate every 10s to fold
+    # real-time demand intensity into the surge multiplier.
+    log("Trip", "→ Features.record_event(ride_request)", flow="send", region=region)
+    ctx.object_send(
+        features_svc.record_event,
+        key=f"events:region:{region}:ride_request",
+        arg={},
+    )
 
     log("Trip", "quoted", trip=trip_id, region=region,
         eta=selected["eta_seconds"], price=selected["price_cents"],

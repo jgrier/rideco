@@ -25,17 +25,31 @@ pricing = restate.VirtualObject("Pricing")
 REFRESH_INTERVAL = timedelta(seconds=10)
 
 
-def _multiplier_from_signals(supply: int, demand: int, weather: str, accidents: float) -> float:
-    """Sketch of surge pricing: supply/demand ratio with weather + accident
-    adjustments.
+def _multiplier_from_signals(
+    supply: int, demand: int, weather: str, accidents: float,
+    request_rate_per_s: float,
+) -> float:
+    """Sketch of surge pricing: supply/demand ratio with weather +
+    accident adjustments + a rolling-window demand-intensity term.
 
-    Reality is constrained optimization across a network topology matrix. The
-    point here is to show the shape — features in, multiplier out, refreshed
-    in place.
+    Reality is constrained optimization across a network topology matrix.
+    The point here is to show the shape — features in, multiplier out,
+    refreshed in place.
+
+    `request_rate_per_s` comes from a windowed aggregate maintained by
+    the Features service (see Features.record_event / event_rate). It
+    decays naturally, unlike the cumulative `demand` counter, so the
+    multiplier responds to *recent* demand instead of all-time demand.
     """
     base = 1.0
     if supply > 0:
         base = max(1.0, demand / max(supply, 1))
+    # Rolling-window contribution. >0.5 req/s starts nudging the
+    # multiplier; the contribution caps at 1.5x. With ~5 sims fanning
+    # out across 4 regions at 0.10/s each, baseline is ~0.12/s/region
+    # — well under the threshold, so this kicks in only on real bursts.
+    if request_rate_per_s > 0.5:
+        base *= min(1.5, 1.0 + (request_rate_per_s - 0.5) * 0.25)
     if weather in ("rain_heavy", "snow"):
         base *= 1.25
     if accidents > 0.5:
@@ -75,19 +89,30 @@ async def refresh(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
         key=feature_key(ENTITY_REGION, region, "accident_density"),
         arg={"default": 0.0},
     )
+    # Windowed demand-intensity from the Features rolling aggregate.
+    # Trip.request_ride fire-and-forgets a record_event per request;
+    # this read returns events/sec over the last 60s.
+    rate_res = await ctx.object_call(
+        features_svc.event_rate,
+        key=f"events:region:{region}:ride_request",
+        arg={},
+    )
     supply = (await ctx.get("supply_count", type_hint=int)) or 0
     demand = (await ctx.get("demand_count", type_hint=int)) or 0
+    request_rate = float(rate_res.get("rate_per_s") or 0.0)
 
     multiplier = _multiplier_from_signals(
         supply=supply,
         demand=demand,
         weather=str(weather_res.get("value") or "clear"),
         accidents=float(accidents_res.get("value") or 0.0),
+        request_rate_per_s=request_rate,
     )
     ctx.set("multiplier", multiplier)
     ctx.set("last_refresh_ms", await ctx.time())
     log("Pricing", "refresh", region=region, multiplier=multiplier,
-        weather=weather_res.get("value"), accidents=accidents_res.get("value"))
+        weather=weather_res.get("value"), accidents=accidents_res.get("value"),
+        request_rate_per_s=request_rate)
 
     log("Pricing", "→ refresh in 10s", flow="self", region=region)
     ctx.object_send(refresh, key=region, arg={}, send_delay=REFRESH_INTERVAL)
