@@ -27,7 +27,9 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import DataTable, Footer, Header, Static
+from textual.containers import Vertical
+from textual.screen import ModalScreen
+from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from rideco.shared.regions import REGIONS, all_regions
 from rideco.tui.processes import (
@@ -267,10 +269,164 @@ HELP_TEXT = """[bold]RideCo TUI[/bold]
             clamped to [0.02, 2.00])
   [yellow]shift+p[/yellow]   pause / resume riders + drivers + mapping
 
+[bold cyan]Trip inspection[/bold cyan]
+  [yellow]t[/yellow]    open the trip-detail modal (pre-filled with the last
+        trip made via 'm'; type any trip id + Enter to retarget)
+
 [bold cyan]What's running[/bold cyan]
   The TUI owns restate-server, the twelve service hypercorns, and
   the sim fleet. Tables above are live (1s poll).
 """
+
+
+TRIP_STATUS_STYLES = {
+    "requested":   ("dim",            "requested"),
+    "quoted":      ("yellow",         "quoted"),
+    "dispatching": ("yellow",         "dispatching"),
+    "assigned":    ("green",          "assigned"),
+    "in_progress": ("green",          "in_progress"),
+    "completed":   ("bold green",     "completed"),
+    "cancelled":   ("red",            "cancelled"),
+}
+
+
+def _styled_status(status: Any) -> str:
+    if not isinstance(status, str) or not status:
+        return "[dim]—[/dim]"
+    style, label = TRIP_STATUS_STYLES.get(status, ("white", status))
+    return f"[{style}]{label}[/{style}]"
+
+
+def _render_trip(data: dict) -> str:
+    """Render a Trip.get response into Rich-markup text."""
+    if not data or not data.get("trip_id"):
+        return "[red]no such trip (state empty)[/red]"
+    trip_id = data["trip_id"]
+    status = _styled_status(data.get("status"))
+    region = data.get("region") or "—"
+    rider = data.get("rider_id") or "—"
+    driver = data.get("assigned_driver_id") or "[dim]—[/dim]"
+    epoch = data.get("epoch_id")
+    epoch_s = str(epoch) if epoch is not None else "[dim]—[/dim]"
+    offer = data.get("offer") or {}
+    if offer:
+        eta = offer.get("eta_seconds")
+        eta_s = f"{eta // 60}m {eta % 60}s" if isinstance(eta, int) else "—"
+        price = offer.get("price_cents")
+        price_s = f"${price/100:.2f}" if isinstance(price, (int, float)) else "—"
+        car = offer.get("car_class") or "—"
+        rel = offer.get("reliability_score")
+        rel_s = f"{rel:.2f}" if isinstance(rel, (int, float)) else "—"
+        offer_block = (
+            "[bold]Offer[/bold]\n"
+            f"  ETA:        [cyan]{eta_s}[/cyan]\n"
+            f"  Price:      [cyan]{price_s}[/cyan]\n"
+            f"  Car class:  [cyan]{car}[/cyan]\n"
+            f"  Reliability: [cyan]{rel_s}[/cyan]\n"
+        )
+    else:
+        offer_block = "[dim]No offer yet (still in 'requested' state?)[/dim]"
+    mult = data.get("multiplier")
+    mult_s = f"{mult:.2f}x" if isinstance(mult, (int, float)) else "—"
+    awk = data.get("pending_match_awakeable") or ""
+    if awk:
+        awk_block = (
+            f"[bold]Awaiting match[/bold] — awakeable: [cyan]{awk}[/cyan]\n"
+            "  [dim]Trip is suspended; Dispatch will resolve this on the next round[/dim]"
+        )
+    else:
+        awk_block = "[dim]Not currently awaiting a match.[/dim]"
+    return (
+        f"[bold cyan]{trip_id}[/bold cyan]    status: {status}    region: [white]{region}[/white]\n\n"
+        f"rider:  [white]{rider}[/white]\n"
+        f"driver: [white]{driver}[/white]    epoch: [white]{epoch_s}[/white]    multiplier: [white]{mult_s}[/white]\n\n"
+        f"{offer_block}\n"
+        f"{awk_block}"
+    )
+
+
+class TripDetailScreen(ModalScreen):
+    """Modal that polls Trip.get for a given trip id and renders detail.
+
+    Pre-fills with the last manually-made trip id if any, but the user
+    can type any trip id and press Enter to retarget.
+    """
+
+    CSS = """
+    TripDetailScreen { align: center middle; }
+    #trip_modal {
+        width: 90; height: 24; padding: 1 2;
+        border: thick $accent; background: $surface;
+    }
+    #trip_id_input { margin-bottom: 1; }
+    #trip_body { height: 1fr; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("ctrl+c", "close", "Close"),
+    ]
+
+    def __init__(self, client: httpx.AsyncClient, initial_trip_id: str = "") -> None:
+        super().__init__()
+        self._client = client
+        self._trip_id = initial_trip_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="trip_modal"):
+            yield Static(
+                "[bold]Trip detail[/bold]   "
+                "[dim](type a trip id and press Enter; esc to close)[/dim]",
+            )
+            yield Input(
+                value=self._trip_id, placeholder="trip-xxxxxxxx",
+                id="trip_id_input",
+            )
+            yield Static(id="trip_body")
+
+    async def on_mount(self) -> None:
+        self.set_interval(1.0, self._poll)
+        if self._trip_id:
+            await self._poll()
+        else:
+            self.query_one("#trip_body", Static).update(
+                "[dim]enter a trip id above and press Enter[/dim]",
+            )
+
+    @on(Input.Submitted, "#trip_id_input")
+    async def _on_submitted(self, event: Input.Submitted) -> None:
+        self._trip_id = event.value.strip()
+        await self._poll()
+
+    @on(Input.Changed, "#trip_id_input")
+    def _on_changed(self, event: Input.Changed) -> None:
+        self._trip_id = event.value.strip()
+
+    async def _poll(self) -> None:
+        if not self._trip_id:
+            return
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/Trip/{self._trip_id}/get",
+                json={}, timeout=2.0,
+            )
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            try:
+                self.query_one("#trip_body", Static).update(
+                    f"[red]error fetching {self._trip_id}: {e}[/red]",
+                )
+            except Exception:
+                pass
+            return
+        try:
+            self.query_one("#trip_body", Static).update(_render_trip(data))
+        except Exception:
+            pass
+
+    def action_close(self) -> None:
+        self.dismiss()
 
 
 class SimPanel(Static):
@@ -418,6 +574,7 @@ class RidecoApp(App):
         Binding("[", "rate_down", "Rate−"),
         Binding("]", "rate_up", "Rate+"),
         Binding("shift+p", "sims_toggle", "Pause sims"),
+        Binding("t", "trip_detail", "Trip detail"),
     ]
 
     def __init__(self, auto_boot: bool = True) -> None:
@@ -792,6 +949,15 @@ class RidecoApp(App):
             self._boot_progress(f"[red]reset failed: {e}[/red]")
         finally:
             self._resetting = False
+
+    def action_trip_detail(self) -> None:
+        """Open the trip-detail modal, pre-filled with the last manual trip."""
+        self.push_screen(
+            TripDetailScreen(
+                client=self._client,
+                initial_trip_id=self._last_manual_trip or "",
+            ),
+        )
 
     # ───── sim control ───────────────────────────────────────────────
 
