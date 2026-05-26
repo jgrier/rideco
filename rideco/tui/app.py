@@ -45,6 +45,7 @@ MODE_HELP = "help"
 MODE_BOOT = "boot"
 MODE_TEARDOWN = "teardown"
 MODE_LOG = "log"
+MODE_REGION = "region"
 
 
 INGRESS = "http://localhost:8080"
@@ -220,7 +221,7 @@ class ServicesTable(DataTable):
         self.update_cell(svc.name, "last_log", tail or "")
 
 
-HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3d — full command surface)[/dim]
+HELP_TEXT = """[bold]RideCo TUI[/bold]
 
 [bold cyan]Navigation[/bold cyan]
   [yellow]Tab[/yellow]    move focus between the Regions and Services tables
@@ -232,7 +233,7 @@ HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim](phase 3d — full command surface
   [yellow]?[/yellow]    show this help
   [yellow]r[/yellow]    refresh now
 
-[bold cyan]On the Regions table[/bold cyan]
+[bold cyan]On the Regions table  ([italic]bottom pane shows live region detail[/italic])[/bold cyan]
   [yellow]s[/yellow]    spike the selected region (25s of unsafe features
         — the RegionSafetyAgent will halt it)
   [yellow]a[/yellow]    approve the selected region's pending awakeable
@@ -287,6 +288,56 @@ class BottomPane(Static):
             body_text = "\n".join(escape(line) for line in lines)
         self.update(f"{header}\n\n{body_text}")
 
+    def show_region(self, region: str, snap: dict) -> None:
+        """Render a focused detail view for the highlighted region."""
+        a = snap.get("agent") or {}
+        d = snap.get("dispatch") or {}
+        active = a.get("region_active")
+        if active is False:
+            status = "[bold red]HALTED[/bold red]"
+        elif active is True:
+            status = "[green]active[/green]"
+        else:
+            status = "[dim]—[/dim]"
+        score = a.get("last_score")
+        if isinstance(score, (int, float)):
+            if score >= RISK_THRESHOLD:
+                score_s = f"[bold red]{score:.2f}[/bold red]"
+            elif score >= RISK_THRESHOLD * 0.66:
+                score_s = f"[yellow]{score:.2f}[/yellow]"
+            else:
+                score_s = f"[green]{score:.2f}[/green]"
+        else:
+            score_s = "[dim]—[/dim]"
+        halts = a.get("halts", 0)
+        halts_s = f"[bold red]{halts}[/bold red]" if halts else "[dim]0[/dim]"
+        awk = a.get("pending_awakeable") or ""
+        if awk:
+            awk_block = (
+                f"[bold]Pending awakeable:[/bold] [cyan]{awk}[/cyan]\n"
+                "  [dim]press[/dim] [yellow]a[/yellow] [dim]to approve and resume dispatch[/dim]"
+            )
+        else:
+            awk_block = "[dim]No pending awakeable (region not suspended).[/dim]"
+        header = (
+            f"[bold cyan]{region}[/bold cyan]   status={status}   "
+            f"halts={halts_s}   risk={score_s} [dim](thresh {RISK_THRESHOLD:.2f})[/dim]   "
+            f"epoch=[white]{d.get('epoch_id', 0)}[/white]"
+        )
+        counts = (
+            f"  pending=[yellow]{d.get('pending_trips_count', 0)}[/yellow]   "
+            f"in-flight=[cyan]{d.get('in_flight', 0)}[/cyan]   "
+            f"done=[bold green]{d.get('total_completed', 0)}[/bold green]   "
+            f"idle drivers=[white]{d.get('active_driver_count', 0)}[/white]"
+        )
+        footer = (
+            "  [dim]press[/dim] [yellow]s[/yellow] [dim]to spike this region "
+            "(25s sustained unsafe features)   ·   [yellow]?[/yellow] for help[/dim]"
+        )
+        self.update(
+            f"{header}\n\n{counts}\n\n{awk_block}\n\n{footer}"
+        )
+
 
 # ───── app ───────────────────────────────────────────────────────────
 
@@ -318,10 +369,14 @@ class RidecoApp(App):
         self._mode: str = MODE_HELP
         self._selected_service: Optional[str] = None
         self._selected_region: Optional[str] = None
-        # The ServicesTable auto-emits a RowHighlighted for row 0 on mount.
-        # We swallow that so the bottom pane stays on the help screen until
-        # the user actually arrows into a service.
-        self._initial_highlight_consumed = False
+        # Both DataTables auto-emit a RowHighlighted for row 0 on mount.
+        # We swallow each table's first event so the bottom pane stays on
+        # the help screen until the user actually arrows into a row.
+        self._initial_region_highlight_consumed = False
+        self._initial_service_highlight_consumed = False
+        # Per-region spike guard — pressing 's' twice on the same region
+        # would otherwise stack two 25s write loops and double the rate.
+        self._spiking: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -400,6 +455,19 @@ class RidecoApp(App):
             return
         for region, snap in zip(regions, snaps):
             table.apply(region, snap)
+        # If the bottom pane is in region-detail mode, repaint it from the
+        # snapshot we just pulled so it streams at the same cadence.
+        if self._mode == MODE_REGION and self._selected_region:
+            try:
+                idx = regions.index(self._selected_region)
+            except ValueError:
+                return
+            try:
+                self.query_one(BottomPane).show_region(
+                    self._selected_region, snaps[idx],
+                )
+            except Exception:
+                pass
 
     async def _refresh_services(self) -> None:
         try:
@@ -422,32 +490,51 @@ class RidecoApp(App):
 
     @on(DataTable.RowHighlighted)
     def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        """Track which row in which table the user is on.
+        """Track which row in which table the user is on, and flip the
+        bottom pane to match (region detail or service log tail).
 
-        Services table: also flip the bottom pane to that service's live
-        log tail. Regions table: just remember the selection so s/a
-        target it (no bottom-pane change)."""
+        The very first auto-highlight from each table on mount is
+        swallowed so the help screen survives until the user actually
+        moves the cursor."""
         if event.row_key is None or event.row_key.value is None:
             return
 
         if isinstance(event.control, RegionsTable):
-            self._selected_region = event.row_key.value
+            region = event.row_key.value
+            self._selected_region = region
+            if not self._initial_region_highlight_consumed:
+                self._initial_region_highlight_consumed = True
+                return
+            self._mode = MODE_REGION
+            asyncio.create_task(self._paint_region_now(region))
             return
 
         if isinstance(event.control, ServicesTable):
-            if not self._initial_highlight_consumed:
-                self._initial_highlight_consumed = True
-                return
             name = event.row_key.value
+            self._selected_service = name
+            if not self._initial_service_highlight_consumed:
+                self._initial_service_highlight_consumed = True
+                return
             svc = self.pm.services.get(name)
             if svc is None:
                 return
-            self._selected_service = name
             self._mode = MODE_LOG
             try:
                 self.query_one(BottomPane).show_log(svc)
             except Exception:
                 pass
+
+    async def _paint_region_now(self, region: str) -> None:
+        """One-shot fetch + paint so switching to a region row shows
+        detail immediately instead of waiting for the next 1s poll."""
+        snap = await fetch_region_snapshot(self._client, region)
+        # Mode/selection may have changed while we were awaiting.
+        if self._mode != MODE_REGION or self._selected_region != region:
+            return
+        try:
+            self.query_one(BottomPane).show_region(region, snap)
+        except Exception:
+            pass
 
     # ───── actions ───────────────────────────────────────────────────
 
@@ -469,28 +556,35 @@ class RidecoApp(App):
         if region is None:
             self.notify("no region selected", severity="warning")
             return
+        if region in self._spiking:
+            self.notify(f"{region} already spiking — ignored", severity="warning")
+            return
         self.notify(f"spiking {region} (25s sustained)...")
         asyncio.create_task(self._spike(region))
 
     async def _spike(self, region: str) -> None:
-        end = asyncio.get_event_loop().time() + 25.0
-        wrote = 0
-        while asyncio.get_event_loop().time() < end:
-            try:
-                await self._client.post(
-                    f"{INGRESS}/Features/region:{region}:accident_density/set",
-                    json={"value": 0.85}, timeout=2.0,
-                )
-                await self._client.post(
-                    f"{INGRESS}/Features/region:{region}:weather/set",
-                    json={"value": "rain_heavy"}, timeout=2.0,
-                )
-                wrote += 1
-            except Exception as e:
-                self.notify(f"spike write error: {e}", severity="error")
-                return
-            await asyncio.sleep(3.0)
-        self.notify(f"spike of {region} done ({wrote} writes)")
+        self._spiking.add(region)
+        try:
+            end = asyncio.get_event_loop().time() + 25.0
+            wrote = 0
+            while asyncio.get_event_loop().time() < end:
+                try:
+                    await self._client.post(
+                        f"{INGRESS}/Features/region:{region}:accident_density/set",
+                        json={"value": 0.85}, timeout=2.0,
+                    )
+                    await self._client.post(
+                        f"{INGRESS}/Features/region:{region}:weather/set",
+                        json={"value": "rain_heavy"}, timeout=2.0,
+                    )
+                    wrote += 1
+                except Exception as e:
+                    self.notify(f"spike write error: {e}", severity="error")
+                    return
+                await asyncio.sleep(3.0)
+            self.notify(f"spike of {region} done ({wrote} writes)")
+        finally:
+            self._spiking.discard(region)
 
     async def action_approve_region(self) -> None:
         region = self._region_target()
