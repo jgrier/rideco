@@ -78,6 +78,18 @@ async def fetch_region_snapshot(
     return {"agent": agent, "dispatch": dispatch}
 
 
+async def fetch_sim_state(client: httpx.AsyncClient) -> dict:
+    return await _fetch(client, "SimControl", "global")
+
+
+# Rate-tuning bounds for the [ / ] keys. The SimControl default at boot
+# is 0.10 trips/sec/rider. Floor/cap keep the demo from drifting into
+# either silence or thousands of trips/sec.
+RATE_STEP = 0.05
+RATE_MIN = 0.02
+RATE_MAX = 2.0
+
+
 # ───── cell formatting ───────────────────────────────────────────────
 
 
@@ -250,10 +262,43 @@ HELP_TEXT = """[bold]RideCo TUI[/bold]
   [yellow]k[/yellow]    kill the selected service process
   [yellow]b[/yellow]    boot the selected service (re-registers with Restate)
 
+[bold cyan]Sims  ([italic]single-line panel above the bottom pane[/italic])[/bold cyan]
+  [yellow]\\[[/yellow] / [yellow]\\][/yellow]   nudge the per-rider trip rate down / up (step 0.05/s,
+            clamped to [0.02, 2.00])
+  [yellow]shift+p[/yellow]   pause / resume riders + drivers + mapping
+
 [bold cyan]What's running[/bold cyan]
   The TUI owns restate-server, the twelve service hypercorns, and
   the sim fleet. Tables above are live (1s poll).
 """
+
+
+class SimPanel(Static):
+    """Single-line live summary of the sim fleet, with key hints."""
+
+    DEFAULT = "[dim]sims: connecting...[/dim]"
+
+    def on_mount(self) -> None:
+        self.update(self.DEFAULT)
+
+    def show(
+        self, *, riders: int, drivers: int, rate: Any,
+        mapping_s: Any, paused: bool,
+    ) -> None:
+        rate_s = f"{rate:.2f}/s" if isinstance(rate, (int, float)) else "—"
+        map_s = f"{mapping_s:.1f}s" if isinstance(mapping_s, (int, float)) else "—"
+        state = (
+            "[bold red]PAUSED[/bold red]" if paused
+            else "[green]running[/green]"
+        )
+        self.update(
+            f"[bold]Sims[/bold]   "
+            f"riders [yellow]{riders}[/yellow] @ [cyan]{rate_s}[/cyan]   "
+            f"drivers [yellow]{drivers}[/yellow]   "
+            f"mapping [yellow]{map_s}[/yellow]   "
+            f"state: {state}   "
+            f"[dim]\\[/\\] rate↓↑   shift+p pause/resume[/dim]"
+        )
 
 
 class BottomPane(Static):
@@ -354,6 +399,7 @@ class RidecoApp(App):
     Screen { layout: vertical; }
     #regions { height: 9; }
     #services { height: 15; }
+    #sim_panel { height: 1; padding: 0 2; }
     #bottom { padding: 1 2; border: round $accent; }
     """
 
@@ -369,6 +415,9 @@ class RidecoApp(App):
         Binding("ctrl+r", "reset_all", "Reset"),
         Binding("k", "kill_service", "Kill svc"),
         Binding("b", "boot_service", "Boot svc"),
+        Binding("[", "rate_down", "Rate−"),
+        Binding("]", "rate_up", "Rate+"),
+        Binding("shift+p", "sims_toggle", "Pause sims"),
     ]
 
     def __init__(self, auto_boot: bool = True) -> None:
@@ -393,11 +442,17 @@ class RidecoApp(App):
         self._last_manual_trip: Optional[str] = None
         # Reset is heavy and global — guard to avoid two concurrent resets.
         self._resetting: bool = False
+        # Sim pause state. SimControl has no central paused flag (each
+        # rider/driver/mapping VO holds its own), so we track what we
+        # last told the fleet and trust it.
+        self._sims_paused: bool = False
+        self._last_sim_state: dict = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield RegionsTable(id="regions")
         yield ServicesTable(id="services")
+        yield SimPanel(id="sim_panel")
         yield BottomPane(id="bottom")
         yield Footer()
 
@@ -409,6 +464,7 @@ class RidecoApp(App):
         # Start polling immediately so the user sees the (empty) tables.
         self.set_interval(1.0, self._refresh_regions)
         self.set_interval(0.8, self._refresh_services)
+        self.set_interval(2.0, self._refresh_sim)
         if self._auto_boot:
             asyncio.create_task(self._boot())
 
@@ -484,6 +540,24 @@ class RidecoApp(App):
                 )
             except Exception:
                 pass
+
+    async def _refresh_sim(self) -> None:
+        try:
+            data = await fetch_sim_state(self._client)
+        except Exception:
+            return
+        self._last_sim_state = data
+        try:
+            panel = self.query_one(SimPanel)
+        except Exception:
+            return
+        panel.show(
+            riders=data.get("riders", 0),
+            drivers=data.get("drivers", 0),
+            rate=data.get("rider_rate"),
+            mapping_s=data.get("mapping_interval_s"),
+            paused=self._sims_paused,
+        )
 
     async def _refresh_services(self) -> None:
         try:
@@ -718,6 +792,79 @@ class RidecoApp(App):
             self._boot_progress(f"[red]reset failed: {e}[/red]")
         finally:
             self._resetting = False
+
+    # ───── sim control ───────────────────────────────────────────────
+
+    def action_rate_down(self) -> None:
+        asyncio.create_task(self._nudge_rate(-RATE_STEP))
+
+    def action_rate_up(self) -> None:
+        asyncio.create_task(self._nudge_rate(+RATE_STEP))
+
+    async def _nudge_rate(self, delta: float) -> None:
+        current = self._last_sim_state.get("rider_rate")
+        if not isinstance(current, (int, float)):
+            self.notify("rider_rate unknown yet — wait for sims to settle",
+                        severity="warning")
+            return
+        new_rate = max(RATE_MIN, min(RATE_MAX, float(current) + delta))
+        if abs(new_rate - float(current)) < 1e-6:
+            self.notify(f"rider_rate already at {new_rate:.2f}/s "
+                        f"({'min' if delta < 0 else 'max'})",
+                        severity="warning")
+            return
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/SimControl/global/set_rider_rate",
+                json={"rate": new_rate}, timeout=5.0,
+            )
+            r.raise_for_status()
+            # Update cached state immediately so the next keypress sees
+            # the new value rather than waiting for the 2s poll.
+            self._last_sim_state["rider_rate"] = new_rate
+            self.notify(f"rider_rate → {new_rate:.2f}/s")
+        except Exception as e:
+            self.notify(f"set_rider_rate failed: {e}", severity="error")
+
+    async def action_sims_toggle(self) -> None:
+        if self._sims_paused:
+            await self._resume_sims()
+        else:
+            await self._pause_sims()
+
+    async def _pause_sims(self) -> None:
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/SimControl/global/stop_all",
+                json={}, timeout=10.0,
+            )
+            r.raise_for_status()
+            self._sims_paused = True
+            self.notify("sims paused (riders + drivers + mapping)")
+        except Exception as e:
+            self.notify(f"pause sims failed: {e}", severity="error")
+
+    async def _resume_sims(self) -> None:
+        # SimControl has no single 'resume_all'; call the three resume
+        # handlers in parallel. resume_riders/resume_drivers/resume_mapping
+        # each re-kick the per-VO tick loops.
+        async def _post(path: str) -> None:
+            r = await self._client.post(
+                f"{INGRESS}/SimControl/global/{path}",
+                json={}, timeout=10.0,
+            )
+            r.raise_for_status()
+
+        try:
+            await asyncio.gather(
+                _post("resume_riders"),
+                _post("resume_drivers"),
+                _post("resume_mapping"),
+            )
+            self._sims_paused = False
+            self.notify("sims resumed")
+        except Exception as e:
+            self.notify(f"resume sims failed: {e}", severity="error")
 
     async def action_kill_service(self) -> None:
         name = self._selected_service
