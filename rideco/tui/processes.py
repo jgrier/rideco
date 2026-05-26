@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,15 @@ STATUS_STOPPED = "stopped"
 STATUS_STARTING = "starting"
 STATUS_RUNNING = "running"
 STATUS_DEAD = "dead"
+
+
+def _signal_group(pgid: int, sig: int) -> None:
+    """Send `sig` to every process in the group `pgid`. Swallowing
+    ProcessLookupError is intentional — the group may already be gone."""
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
 
 
 @dataclass
@@ -105,6 +115,11 @@ class ProcessManager:
         svc.status = STATUS_STARTING
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         try:
+            # start_new_session=True puts the hypercorn parent in its own
+            # process group AND session, so stop_service can SIGTERM the
+            # whole group and clean up hypercorn's multiprocessing worker
+            # children atomically. Without this, SIGKILL'ing the parent
+            # leaves workers orphaned (we saw this in real cleanup).
             proc = await asyncio.create_subprocess_exec(
                 self.python, "-m", "hypercorn",
                 f"rideco.services.{name}:app",
@@ -113,6 +128,7 @@ class ProcessManager:
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(self.repo_dir),
                 env=env,
+                start_new_session=True,
             )
         except Exception as e:
             svc.status = STATUS_DEAD
@@ -145,22 +161,34 @@ class ProcessManager:
             svc.log.append(f"[exit {rc}]")
 
     async def stop_service(self, name: str) -> None:
+        """Stop a service. Hard-bounded: returns in ≤ ~3.5s even if the
+        child or its workers are unresponsive — so the UI is never
+        wedged by a stop. We signal the whole process group (the
+        hypercorn parent + its multiprocessing workers) and bound
+        every wait."""
         svc = self.services[name]
         proc = svc.process
         svc.status = STATUS_STOPPED  # set first so reader doesn't flip to dead
         if proc is None or proc.returncode is not None:
             svc.process = None
             return
+        pgid = proc.pid  # with start_new_session, pid == pgid
         try:
-            proc.terminate()
+            _signal_group(pgid, signal.SIGTERM)
             try:
-                await asyncio.wait_for(proc.wait(), timeout=3.0)
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-        except ProcessLookupError:
-            pass
-        svc.process = None
+                _signal_group(pgid, signal.SIGKILL)
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # asyncio's child watcher hasn't reported the exit,
+                    # but SIGKILL is immediate at the kernel level so
+                    # the process is gone. Give up waiting; don't wedge
+                    # the caller.
+                    svc.log.append("[stop: wait timed out after SIGKILL]")
+        finally:
+            svc.process = None
 
     async def restart_service(self, name: str) -> None:
         await self.stop_service(name)

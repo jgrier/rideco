@@ -1070,31 +1070,48 @@ class RidecoApp(App):
         except Exception as e:
             self.notify(f"resume sims failed: {e}", severity="error")
 
-    async def action_kill_service(self) -> None:
+    def action_kill_service(self) -> None:
         name = self._selected_service
         if not name:
             self.notify("select a service in the Services table first",
                         severity="warning")
             return
         self.notify(f"killing {name}...")
-        await self.pm.stop_service(name)
-        self.notify(f"{name} stopped")
+        # Fire-and-forget so the keypress handler returns immediately;
+        # if stop_service ever wedges (asyncio watcher quirk on rapid
+        # child kill, for example), the UI keeps responding.
+        asyncio.create_task(self._kill_one(name))
 
-    async def action_boot_service(self) -> None:
+    async def _kill_one(self, name: str) -> None:
+        try:
+            await asyncio.wait_for(self.pm.stop_service(name), timeout=8.0)
+            self.notify(f"{name} stopped")
+        except asyncio.TimeoutError:
+            self.notify(
+                f"{name}: stop timed out after 8s — process may be orphaned",
+                severity="error",
+            )
+        except Exception as e:
+            self.notify(f"stop {name} failed: {e}", severity="error")
+
+    def action_boot_service(self) -> None:
         name = self._selected_service
         if not name:
             self.notify("select a service in the Services table first",
                         severity="warning")
             return
         self.notify(f"booting {name}...")
-        await self.pm.start_service(name)
-        # Give the hypercorn a moment to bind, then re-register with restate.
-        await asyncio.sleep(2.0)
+        asyncio.create_task(self._boot_one(name))
+
+    async def _boot_one(self, name: str) -> None:
         try:
+            await self.pm.start_service(name)
+            # Give the hypercorn a moment to bind, then re-register.
+            await asyncio.sleep(2.0)
             await self.pm.register_one(name)
             self.notify(f"{name} up + registered")
         except Exception as e:
-            self.notify(f"register {name} failed: {e}", severity="error")
+            self.notify(f"boot {name} failed: {e}", severity="error")
 
 
 def main() -> None:
