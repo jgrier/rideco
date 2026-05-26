@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
+from rich.console import Group
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -62,7 +63,7 @@ REPO_DIR = Path(__file__).resolve().parent.parent.parent
 async def _fetch(client: httpx.AsyncClient, service: str, key: str) -> dict:
     try:
         r = await client.post(
-            f"{INGRESS}/{service}/{key}/get", json={}, timeout=1.5,
+            f"{INGRESS}/{service}/{key}/get", json={}, timeout=1.0,
         )
         r.raise_for_status()
         return r.json()
@@ -230,10 +231,15 @@ class ServicesTable(DataTable):
     def apply(self, svc: ServiceProc) -> None:
         self.update_cell(svc.name, "status", _status_text(svc.status))
         self.update_cell(svc.name, "pid", str(svc.pid) if svc.pid else "—")
-        tail = svc.last_log
-        if len(tail) > 80:
-            tail = tail[:77] + "..."
-        self.update_cell(svc.name, "last_log", tail or "")
+        # Render as a Rich Text with no_wrap so a long log line gets
+        # ellipsized at the column boundary instead of wrapping into a
+        # tall row — wrapping forces a Textual re-layout on every poll
+        # and visibly hangs the UI when downstream services log
+        # multi-kilobyte tracebacks.
+        self.update_cell(
+            svc.name, "last_log",
+            Text(svc.last_log or "", no_wrap=True, overflow="ellipsis"),
+        )
 
 
 HELP_TEXT = """[bold]RideCo TUI[/bold]
@@ -480,21 +486,26 @@ class BottomPane(Static):
         self.update(body)
 
     def show_log(self, svc: ServiceProc, height_hint: int = 14) -> None:
-        """Render the most-recent log lines for the given service."""
-        header = (
+        """Render the most-recent log lines for the given service.
+
+        Each line is wrapped in a Rich Text with no_wrap=True so long
+        lines get cropped at the pane boundary instead of wrapping —
+        wrapping multi-kilobyte tracebacks turns this pane into a wall
+        of text and makes Textual re-layout the screen every 0.8s.
+        """
+        header = Text.from_markup(
             f"[bold cyan]{svc.name}[/bold cyan]"
             f"   port=[yellow]{svc.port}[/yellow]"
             f"   status=[white]{svc.status}[/white]"
             f"   pid=[white]{svc.pid or '—'}[/white]"
-            f"   [dim](? for help)[/dim]"
+            f"   [dim](? for help)[/dim]",
         )
         lines = list(svc.log)[-height_hint:]
         if not lines:
-            body_text = "[dim]no log output yet[/dim]"
+            body: Any = Text.from_markup("[dim]no log output yet[/dim]")
         else:
-            from rich.markup import escape
-            body_text = "\n".join(escape(line) for line in lines)
-        self.update(f"{header}\n\n{body_text}")
+            body = Text("\n".join(lines), no_wrap=True, overflow="crop")
+        self.update(Group(header, Text(""), body))
 
     def show_region(self, region: str, snap: dict) -> None:
         """Render a focused detail view for the highlighted region."""
@@ -604,6 +615,14 @@ class RidecoApp(App):
         # last told the fleet and trust it.
         self._sims_paused: bool = False
         self._last_sim_state: dict = {}
+        # Polling-in-progress flags. set_interval fires the callback at a
+        # fixed cadence; if a previous refresh is still in flight (e.g.
+        # Restate has slowed because a killed service is causing retries
+        # to back up), we'd queue more in-flight requests on every tick
+        # and saturate the httpx pool. Skip overlapping refreshes.
+        self._refreshing_regions = False
+        self._refreshing_services = False
+        self._refreshing_sim = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -674,64 +693,83 @@ class RidecoApp(App):
     # ───── polling ───────────────────────────────────────────────────
 
     async def _refresh_regions(self) -> None:
-        regions = all_regions()
-        snaps = await asyncio.gather(
-            *(fetch_region_snapshot(self._client, r) for r in regions)
-        )
-        try:
-            table = self.query_one(RegionsTable)
-        except Exception:
+        if self._refreshing_regions:
             return
-        for region, snap in zip(regions, snaps):
-            table.apply(region, snap)
-        # If the bottom pane is in region-detail mode, repaint it from the
-        # snapshot we just pulled so it streams at the same cadence.
-        if self._mode == MODE_REGION and self._selected_region:
+        self._refreshing_regions = True
+        try:
+            regions = all_regions()
+            snaps = await asyncio.gather(
+                *(fetch_region_snapshot(self._client, r) for r in regions)
+            )
             try:
-                idx = regions.index(self._selected_region)
-            except ValueError:
-                return
-            try:
-                self.query_one(BottomPane).show_region(
-                    self._selected_region, snaps[idx],
-                )
+                table = self.query_one(RegionsTable)
             except Exception:
-                pass
-
-    async def _refresh_sim(self) -> None:
-        try:
-            data = await fetch_sim_state(self._client)
-        except Exception:
-            return
-        self._last_sim_state = data
-        try:
-            panel = self.query_one(SimPanel)
-        except Exception:
-            return
-        panel.show(
-            riders=data.get("riders", 0),
-            drivers=data.get("drivers", 0),
-            rate=data.get("rider_rate"),
-            mapping_s=data.get("mapping_interval_s"),
-            paused=self._sims_paused,
-        )
-
-    async def _refresh_services(self) -> None:
-        try:
-            table = self.query_one(ServicesTable)
-        except Exception:
-            return
-        for svc in self.pm.services.values():
-            table.apply(svc)
-        # If the bottom is in log-tail mode, repaint the selected service's
-        # buffer so new lines stream in at the same cadence.
-        if self._mode == MODE_LOG and self._selected_service:
-            svc = self.pm.services.get(self._selected_service)
-            if svc is not None:
+                return
+            for region, snap in zip(regions, snaps):
+                table.apply(region, snap)
+            # If the bottom pane is in region-detail mode, repaint it
+            # from the snapshot we just pulled so it streams at the
+            # same cadence.
+            if self._mode == MODE_REGION and self._selected_region:
                 try:
-                    self.query_one(BottomPane).show_log(svc)
+                    idx = regions.index(self._selected_region)
+                except ValueError:
+                    return
+                try:
+                    self.query_one(BottomPane).show_region(
+                        self._selected_region, snaps[idx],
+                    )
                 except Exception:
                     pass
+        finally:
+            self._refreshing_regions = False
+
+    async def _refresh_sim(self) -> None:
+        if self._refreshing_sim:
+            return
+        self._refreshing_sim = True
+        try:
+            try:
+                data = await fetch_sim_state(self._client)
+            except Exception:
+                return
+            self._last_sim_state = data
+            try:
+                panel = self.query_one(SimPanel)
+            except Exception:
+                return
+            panel.show(
+                riders=data.get("riders", 0),
+                drivers=data.get("drivers", 0),
+                rate=data.get("rider_rate"),
+                mapping_s=data.get("mapping_interval_s"),
+                paused=self._sims_paused,
+            )
+        finally:
+            self._refreshing_sim = False
+
+    async def _refresh_services(self) -> None:
+        if self._refreshing_services:
+            return
+        self._refreshing_services = True
+        try:
+            try:
+                table = self.query_one(ServicesTable)
+            except Exception:
+                return
+            for svc in self.pm.services.values():
+                table.apply(svc)
+            # If the bottom is in log-tail mode, repaint the selected
+            # service's buffer so new lines stream at the same cadence.
+            if self._mode == MODE_LOG and self._selected_service:
+                svc = self.pm.services.get(self._selected_service)
+                if svc is not None:
+                    try:
+                        self.query_one(BottomPane).show_log(svc)
+                    except Exception:
+                        pass
+        finally:
+            self._refreshing_services = False
 
     # ───── events ────────────────────────────────────────────────────
 

@@ -122,11 +122,21 @@ class ProcessManager:
         svc.status = STATUS_RUNNING
         svc._reader_task = asyncio.create_task(self._reader(svc))
 
+    # Hard cap on per-log-line length stored in the ring buffer. Without
+    # this, a single 4kB traceback line (common when downstream services
+    # die and sims keep retrying through Restate) ends up in the
+    # Services table cell and forces Textual to re-layout a giant row
+    # on every 0.8s poll — which manifested as the TUI hanging.
+    LOG_LINE_CAP = 400
+
     async def _reader(self, svc: ServiceProc) -> None:
         assert svc.process and svc.process.stdout
         try:
             async for raw in svc.process.stdout:
-                svc.log.append(raw.decode(errors="replace").rstrip())
+                line = raw.decode(errors="replace").rstrip()
+                if len(line) > self.LOG_LINE_CAP:
+                    line = line[: self.LOG_LINE_CAP - 1] + "…"
+                svc.log.append(line)
         except Exception as e:
             svc.log.append(f"[reader error: {e}]")
         rc = await svc.process.wait()
