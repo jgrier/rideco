@@ -17,6 +17,7 @@ Run: ./scripts/tui.sh   (or python -m rideco.tui.app)
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -28,7 +29,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Static
 
-from rideco.shared.regions import all_regions
+from rideco.shared.regions import REGIONS, all_regions
 from rideco.tui.processes import (
     SERVICES,
     STATUS_DEAD,
@@ -229,15 +230,21 @@ HELP_TEXT = """[bold]RideCo TUI[/bold]
   [yellow]↑/↓[/yellow]   select rows in the focused table
 
 [bold cyan]Quit / help / refresh[/bold cyan]
-  [yellow]q[/yellow]    quit (tears everything down)
-  [yellow]?[/yellow]    show this help
-  [yellow]r[/yellow]    refresh now
+  [yellow]q[/yellow]        quit (tears everything down)
+  [yellow]?[/yellow]        show this help
+  [yellow]r[/yellow]        refresh now
+  [yellow]ctrl+r[/yellow]   [red]reset[/red] — wipe ALL Restate state and reboot the stack
 
 [bold cyan]On the Regions table  ([italic]bottom pane shows live region detail[/italic])[/bold cyan]
   [yellow]s[/yellow]    spike the selected region (25s of unsafe features
         — the RegionSafetyAgent will halt it)
   [yellow]a[/yellow]    approve the selected region's pending awakeable
         (resumes dispatch)
+  [yellow]m[/yellow]    make an ad-hoc trip in the selected region
+        (id stored for the next 'c' cancel)
+  [yellow]c[/yellow]    cancel the last trip made via 'm'
+  [yellow]p[/yellow]    poison-pill the selected region's weather key
+        (stuck Features.set, queues per-key, others unaffected)
 
 [bold cyan]On the Services table  ([italic]bottom pane tails the selected service's log[/italic])[/bold cyan]
   [yellow]k[/yellow]    kill the selected service process
@@ -356,6 +363,10 @@ class RidecoApp(App):
         Binding("r", "refresh_now", "Refresh"),
         Binding("s", "spike_region", "Spike"),
         Binding("a", "approve_region", "Approve"),
+        Binding("m", "make_trip", "Make trip"),
+        Binding("c", "cancel_trip", "Cancel trip"),
+        Binding("p", "poison_region", "Poison"),
+        Binding("ctrl+r", "reset_all", "Reset"),
         Binding("k", "kill_service", "Kill svc"),
         Binding("b", "boot_service", "Boot svc"),
     ]
@@ -377,6 +388,11 @@ class RidecoApp(App):
         # Per-region spike guard — pressing 's' twice on the same region
         # would otherwise stack two 25s write loops and double the rate.
         self._spiking: set[str] = set()
+        # Last trip id the user manually made via the 'm' binding. The 'c'
+        # binding cancels this one; demo-style ad-hoc trip flow.
+        self._last_manual_trip: Optional[str] = None
+        # Reset is heavy and global — guard to avoid two concurrent resets.
+        self._resetting: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -606,6 +622,102 @@ class RidecoApp(App):
             self.notify(f"approved {region} — agent resuming")
         except Exception as e:
             self.notify(f"approve failed: {e}", severity="error")
+
+    def action_make_trip(self) -> None:
+        region = self._region_target()
+        if region is None:
+            self.notify("no region selected", severity="warning")
+            return
+        self.notify(f"making trip in {region}...")
+        asyncio.create_task(self._make_trip(region))
+
+    async def _make_trip(self, region: str) -> None:
+        center = REGIONS[region]["center"]
+        lat, lng = center["lat"], center["lng"]
+        trip_id = f"trip-{uuid.uuid4().hex[:8]}"
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/Trip/{trip_id}/request_ride",
+                json={
+                    "rider_id": f"r-{trip_id}",
+                    "origin": {"lat": lat, "lng": lng},
+                    "destination": {"lat": lat - 0.02, "lng": lng + 0.02},
+                    "region": region,
+                },
+                timeout=10.0,
+            )
+            r.raise_for_status()
+            r = await self._client.post(
+                f"{INGRESS}/Trip/{trip_id}/confirm", json={}, timeout=5.0,
+            )
+            r.raise_for_status()
+        except Exception as e:
+            self.notify(f"make-trip failed: {e}", severity="error")
+            return
+        self._last_manual_trip = trip_id
+        self.notify(f"trip {trip_id} created in {region} (saved for 'c')")
+
+    async def action_cancel_trip(self) -> None:
+        trip_id = self._last_manual_trip
+        if trip_id is None:
+            self.notify(
+                "no manually-made trip to cancel — press 'm' first",
+                severity="warning",
+            )
+            return
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/Trip/{trip_id}/cancel", json={}, timeout=5.0,
+            )
+            r.raise_for_status()
+            self.notify(f"cancelled {trip_id}")
+        except Exception as e:
+            self.notify(f"cancel {trip_id} failed: {e}", severity="error")
+
+    async def action_poison_region(self) -> None:
+        region = self._region_target()
+        if region is None:
+            self.notify("no region selected", severity="warning")
+            return
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/Features/region:{region}:weather/set/send",
+                json={"value": "POISON"},
+                timeout=5.0,
+            )
+            r.raise_for_status()
+            self.notify(
+                f"poison sent to Features[region:{region}:weather] "
+                "— stuck invocation will queue same-key writes",
+            )
+        except Exception as e:
+            self.notify(f"poison failed: {e}", severity="error")
+
+    async def action_reset_all(self) -> None:
+        if self._resetting:
+            self.notify("reset already in progress", severity="warning")
+            return
+        self._resetting = True
+        self._mode = MODE_BOOT
+        self._boot_lines = [
+            "[bold yellow]RESET — wiping all Restate state[/bold yellow]",
+        ]
+        try:
+            self.query_one(BottomPane).show_boot(self._boot_lines)
+        except Exception:
+            pass
+        try:
+            await self.pm.full_teardown(
+                progress=self._boot_progress, stop_restate=True,
+            )
+            await self.pm.full_boot(progress=self._boot_progress)
+            # The trip we tracked no longer exists — its state was wiped.
+            self._last_manual_trip = None
+            self._boot_progress("[green]reset complete.[/green]")
+        except Exception as e:
+            self._boot_progress(f"[red]reset failed: {e}[/red]")
+        finally:
+            self._resetting = False
 
     async def action_kill_service(self) -> None:
         name = self._selected_service
