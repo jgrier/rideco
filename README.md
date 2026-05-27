@@ -8,9 +8,9 @@ the role of external clients (RiderSim, DriverSim, MappingSim, plus a
 SimControl fan-out service). All state, durability, retries, ordering,
 and scheduling live inside Restate.
 
-The repo is a reproducible demo. Three terminals, a few scripts, no Kafka, no
-Redis, no separate workflow engine, no agent framework. Just Restate plus
-stateless application code.
+The repo is a reproducible demo. One terminal, a single TUI command, no
+Kafka, no Redis, no separate workflow engine, no agent framework. Just
+Restate plus stateless application code.
 
 ![Architecture](architecture.svg)
 
@@ -112,7 +112,7 @@ a one-way dependency; Dispatch never imports Trip.
 | **Shape** | Virtual Object keyed by `trip_id` |
 | **Receives** | `call()`: `request_ride`, `confirm`, `cancel`, `complete` &nbsp;·&nbsp; shared read: `get` |
 | **State** | `rider_id`, `origin`, `destination`, `region`, `status`, `offer`, `multiplier`, `assigned_driver_id`, `epoch_id`, `pending_match_awakeable` |
-| **Calls** | `call()` → `Offers.generate` &nbsp;·&nbsp; `send()` → `Pricing.note_demand`, `Dispatch.enqueue_trip` (with awakeable token), `Locations.accept_trip` &nbsp;·&nbsp; self-`send()` → `complete` (delayed) |
+| **Calls** | `call()` → `Offers.generate` &nbsp;·&nbsp; `send()` → `Pricing.note_demand`, `Features.record_event` (one event per request into the rolling-window aggregate), `Dispatch.enqueue_trip` (with awakeable token), `Locations.accept_trip` &nbsp;·&nbsp; self-`send()` → `complete` (delayed) |
 
 ### Offers — Stateful microservice
 
@@ -143,7 +143,10 @@ features, returns ETA + reliability score.
 ### Pricing — Stateful microservice
 
 Per-region surge multiplier. The refresh loop is a delayed call to self
-— no external scheduler.
+— no external scheduler. Multiplier reflects weather + accidents + a
+**rolling 60s ride-request rate** read from the Features aggregate
+(below). The cumulative `demand_count` only grows; the windowed rate
+decays naturally, so surge responds to *recent* demand intensity.
 
 | | |
 |---|---|
@@ -151,7 +154,7 @@ Per-region surge multiplier. The refresh loop is a delayed call to self
 | **Shape** | Virtual Object keyed by `region` |
 | **Receives** | `call()` from Offers: `quote` &nbsp;·&nbsp; `send()`: `note_demand` (Trip), `note_supply` (DriverSim) &nbsp;·&nbsp; self-scheduled: `refresh` |
 | **State** | `multiplier`, `supply_count`, `demand_count`, `last_refresh_ms` |
-| **Calls** | `call()` → `Features.get` &nbsp;·&nbsp; self-`send()` → `refresh` in 10s |
+| **Calls** | `call()` → `Features.get` (weather, accidents), `Features.event_rate` (windowed request rate) &nbsp;·&nbsp; self-`send()` → `refresh` in 10s |
 
 ### Locations — Event-driven app + Serving
 
@@ -168,18 +171,39 @@ reads via the shared `get_position` handler are the serving path.
 | **State** | `status`, `matched_lat`, `matched_lng`, `last_ping_ms`, `region`, `current_trip_id` |
 | **Calls** | `send()` → `Dispatch.register_driver` / `deregister_driver` on status transitions |
 
-### Features — Event-driven app + Serving
+### Features — Event-driven app + Serving + stream-processed aggregates
 
-Online feature store. External providers `send()` writes; Restate journals
-each write and invokes `Features.set` on the right key. Internal readers
-`call()` `get` to retrieve the current value.
+Online feature store with **two shapes on the same Virtual Object**:
+
+- **Point-value features** (`set` / `get`) — last-write-wins. Used for
+  `region:SF:weather`, `region:SF:accident_density`. External providers
+  (Mapping in production, MappingSim here) `send()` writes; readers
+  (ETA, Pricing, RegionSafetyAgent) `call()` `get`.
+- **Aggregates over event streams** (`record_event` / `event_rate`) —
+  rolling 60s window per key. Trip.request_ride fire-and-forget sends
+  one event per ride request to `events:region:SF:ride_request`. The
+  handler appends `now` to a per-key timestamp list and trims out
+  samples older than the window. Pricing.refresh `call()`s the shared
+  `event_rate` handler every 10s to read events/sec over the window
+  and fold it into the surge multiplier.
+
+The canonical "events in → windowed aggregate out → consumer service
+decision" stream-processing pattern, hosted on the same VO that serves
+the point-value features. Per-key state slots are independent (`value`
+vs `samples`), and per-key exclusive handlers give each event stream a
+single-writer queue without any explicit locking. Shared `event_rate`
+readers don't block writers.
+
+Per-key serialization also means a stuck handler on one key (the
+poison-pill demo) blocks only that key while every other Features VO
+keeps working — fault isolation at the key level.
 
 | | |
 |---|---|
-| **Domain** | Event-driven apps + Serving |
-| **Shape** | Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}` |
-| **Receives** | `send()` from external providers + internal callers: `set` &nbsp;·&nbsp; shared read: `get` |
-| **State** | `value`, `version`, `last_updated_ms` |
+| **Domain** | Event-driven apps + Serving + stream-processed aggregates |
+| **Shape** | Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}` or `events:{...}` |
+| **Receives** | `send()`: `set` (point value), `record_event` (stream sample) &nbsp;·&nbsp; shared reads: `get`, `event_rate` |
+| **State** | per-key: either `{value, version, last_updated_ms}` OR `{samples}` (list of ms timestamps in the rolling window) |
 | **Calls** | — |
 
 ### Dispatch — Durable execution
@@ -318,105 +342,121 @@ that extra copy is unnecessary when your producers can speak HTTP directly
 to Restate in the first place. Many architectures that have Kafka today
 simply don't need it.
 
-## How to run the demo
+## How to run
 
-Three terminals plus a browser tab at `http://localhost:9070`
-(Restate Web UI).
+One terminal. The TUI owns the entire stack: Restate container,
+the twelve service hypercorns, deployment registration, the sim
+fleet — all of it.
 
 Prereqs: Python 3.13 (or 3.11+), Docker, the
-[`restate` CLI](https://docs.restate.dev/get_started/install), and `uv` (or
-plain `pip`).
+[`restate` CLI](https://docs.restate.dev/get_started/install), and `uv`
+(or plain `pip`).
 
 ```bash
 # Install once
 uv venv --python 3.13 .venv
 .venv/bin/python -m pip install -e .
+
+# Launch
+./scripts/tui.sh
 ```
 
-**Terminal 1** — the show. Inter-service log scrolls here as the demo
-runs; every cross-service hop is tagged `[sync→]` / `[send→]` / `[self→]`.
+On launch the TUI:
 
-```bash
-./scripts/demo-t1.sh fresh
+1. Brings up Restate via `docker compose up -d`
+2. Spawns the twelve service hypercorns (each in its own process group)
+3. Registers each deployment with Restate
+4. Boots the sim fleet (`SimControl.start_all`)
+
+Then it sits there and shows:
+
+- a live **Regions table** — active / halted, halts count, risk score, dispatch epoch, idle drivers, pending / in-flight / done trip counts, pending awakeable id
+- a live **Services table** — process status (running / dead / stopped), PID, last log line for every one of the 12 services
+- a **Sims** strip — rider / driver counts, current rider rate, mapping interval, pause state
+- a **Latest trip** ticker — the freshest enqueued trip across all regions, with status and surge multiplier
+- a split **bottom row** — left side tails the selected service's log or shows the selected region's detail; right side shows that service's narrative (what it owns, what it calls, which Restate primitives it uses) OR the current demo step if you're walking through the guided tour
+
+Press `q` to quit; the TUI tears down sims, hypercorns, and the Restate
+container in order.
+
+### Guided walkthrough
+
+Press `d` to enter demo mode. Eight steps, mirroring the central
+halt / approve / drain narrative end-to-end, with explicit callouts to
+what to look for in the Restate UI:
+
+1. Welcome / orientation
+2. Phase 1 — the system is alive
+3. The cadence loops (`Dispatch.close_epoch`, `Pricing.refresh`, `RegionSafetyAgent.tick` as delayed self-sends)
+4. Phase 2 — spike SF unsafe (press `s`)
+5. The halt (agent suspends on awakeable)
+6. Phase 3 — approve & drain (press `a`)
+7. Stream processing — Pricing reads a windowed ride-request rate from the Features aggregate
+8. Now try the rest
+
+`n` next step, `N` previous step, `o` opens your browser to the Restate
+UI page that step references (Invocations, State browser for the
+relevant VO, etc.). All other TUI keys keep working while reading a
+step — the demo's whole point is telling you what to press.
+
+### Key map
+
+```
+Quit / help / refresh
+  q          quit (tears everything down)
+  ?          show help
+  r          refresh now
+
+Regions table  (bottom-left shows live region detail)
+  s          spike the selected region (25s of unsafe features)
+  a          approve the selected region's pending awakeable
+  m          make an ad-hoc trip in the selected region
+  c          cancel the trip you just made
+  p          poison the selected region's weather feature
+  ctrl+r     full reset — wipe state, reboot the stack
+
+Services table  (bottom-left tails the selected service's log;
+                 bottom-right shows that service's narrative)
+  k          kill the selected service process
+  b          boot the selected service (re-registers with Restate)
+
+Sims
+  [ / ]      nudge per-rider rate down / up (step 0.05/s)
+  shift+p    pause / resume riders + drivers + mapping
+
+Trips
+  t          open the trip-detail modal (defaults to the latest
+             observed trip; type any trip id + Enter to retarget)
+
+Demo
+  d          toggle demo mode
+  n / N      next / previous demo step
+  o          open the Restate UI page this step references
 ```
 
-Pauses for ENTER, wipes Restate state, brings up Restate, then launches
-all twelve services as separate hypercorn processes (one per service,
-ports 9080–9091). Their logs interleave in this terminal with each line
-tagged `[service-name]`.
+### Restate Web UI — `http://localhost:9070`
 
-**Terminal 2** — guided walkthrough. Three phases, ENTER between every step.
+The TUI shows operational + narrative state, the Web UI shows the
+durable state Restate is keeping for you. Press `o` from inside the
+TUI to jump straight to the page each demo step is talking about:
 
-```bash
-./scripts/demo-t2.sh
-```
+- **Overview** (`/ui/overview`) — every registered service and handler.
+- **Invocations** (`/ui/invocations`) — live + historical. `running` is executing now; `scheduled` is a delayed self-send waiting to fire (you'll always see Dispatch.close_epoch, Pricing.refresh, RegionSafetyAgent.tick queued per region); `suspended` is paused on an awakeable (the safety agent, or any Trip.confirm waiting on a match). Status filter is the most useful control.
+- **State** (`/ui/state/<VirtualObject>`) — per-VO key/value inspector. Drill into `RegionSafetyAgent` → SF to watch `region_active`, `halts`, `pending_awakeable` flip live; into `Features` to browse `events:region:*` keys and see the rolling timestamp samples for each event stream.
 
-1. **System alive** — `SimControl.start_all` boots the rider/driver/mapping VOs; constant traffic flows across all four regions.
-2. **Region halts (human-in-the-loop)** — you force a region's features into unsafe territory; the RegionSafetyAgent picks it up on its next tick, halts dispatch for that region, and suspends on an awakeable; other regions keep matching unaffected.
-3. **Human approves** — you POST a verdict; the same invocation resumes; dispatch comes back; the queued backlog drains.
+### Direct HTTP — same ingress the TUI and sims use
 
-**Terminal 3** — live dashboard. Open this once T2 is past Phase 1
-(sims need to be running so there's data to show).
-
-```bash
-./scripts/watch-regions.sh
-```
-
-One row per region, refreshing every second: active/halted, halts count,
-risk score, current dispatch epoch, idle drivers, pending trips, trips
-in flight, completed trips, and the pending awakeable token when the
-agent is suspended. A TOTAL row at the bottom rolls everything up. Watch
-this while you spike a region in T2 — you'll see Risk turn yellow then
-red, Active flip to HALTED, Pending climb, the awakeable populate. After
-you approve, Active goes back to green, Pending drains, Done resumes
-climbing.
-
-![watch-regions dashboard mid-demo, SF halted](watch-regions.svg)
-
-## Poke at the running system
-
-The dashboard in T3 is one window into the running system; there are
-several others. The demo is more interesting if you don't just watch
-it — open a fourth terminal and start poking.
-
-**Restate Web UI — `http://localhost:9070`.** The best single window into
-the system.
-
-- *Services* — every registered service and handler, signatures, recent invocations.
-- *Invocations* — live + historical. `running` is currently executing; `scheduled` is a delayed self-send waiting to fire (you'll always see `Dispatch.close_epoch`, `Pricing.refresh`, and `RegionSafetyAgent.tick` queued per region); `suspended` is paused on an awakeable (the per-region safety agent, or any `Trip.confirm` waiting on a match).
-- *State* — per-VO key/value inspector. Click an object, click a key, see the journaled state.
-
-**Shell views.** A few scripts pretty-print what the UI shows, useful
-when you want to script around them.
-
-```bash
-./scripts/watch-regions.sh                      # live dashboard, updates in place
-./scripts/show-regions.sh                       # one-shot snapshot of all four regions
-./scripts/show-region.sh SF                     # one region in detail
-./scripts/show-trip.sh trip-abc123              # Trip VO + status legend
-./scripts/show-invocations.sh                   # restate invocations list
-```
-
-`watch-regions.sh` is the most useful one to keep open in a side
-terminal during the demo — you can literally see halts flip and pending
-queues drain in real time.
-
-**Direct HTTP — same ingress the sims use.** Any handler is reachable via
-Restate's ingress at `:8080`. The URL pattern is `/{Service}/{key}/{handler}`
-for virtual objects (drop `{key}` for plain services), append `/send` for
-fire-and-forget.
+Every handler is reachable via Restate's ingress at `:8080`. The URL
+pattern is `/{Service}/{key}/{handler}` for virtual objects (drop
+`{key}` for plain services), append `/send` for fire-and-forget.
 
 ```bash
 # Read a Trip VO's full state
 curl -s -X POST http://localhost:8080/Trip/trip-abc123/get \
   -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
 
-# Read a region's safety agent
-curl -s -X POST http://localhost:8080/RegionSafetyAgent/SF/get \
-  -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
-
-# Read a Features VO directly by composite key
-curl -s -X POST 'http://localhost:8080/Features/region:SF:weather/get' \
+# Read the windowed ride-request rate for SF
+curl -s -X POST 'http://localhost:8080/Features/events:region:SF:ride_request/event_rate' \
   -H 'Content-Type: application/json' -d '{}' | python3 -m json.tool
 
 # Force a driver back to idle (call() — caller awaits)
@@ -429,48 +469,43 @@ curl -s -X POST http://localhost:8080/Pricing/SF/refresh/send \
 ```
 
 Inspectors are just `call()`s like any other handler — each VO exposes
-a `shared` (read-only) `get`. The UI, the shell scripts, and your own
-curl are all hitting the same Restate ingress.
+a `shared` (read-only) `get`. The TUI, the Web UI, and your own curl
+all hit the same Restate ingress.
 
-**Restate CLI.** The `restate` CLI talks to the admin API at `:9070`.
+### Things worth trying
 
-```bash
-restate invocations list                       # everything currently in flight
-restate invocations list --status suspended    # who's parked on an awakeable
-restate services list                          # all registered services
-```
+Press `d` for the walkthrough and follow that, then experiment:
 
-**Things worth trying.**
+- Press `k` on the Trip service while sims are running. Pending `Trip.confirm` invocations from sim_rider get queued in Restate's retry queue; press `b` to restart Trip and watch them drain on retry. No state lost.
+- Spike NYC (Tab to Regions, arrow to NYC, press `s`) while SF is already halted. Two regions queued; one verdict per region to drain.
+- Press `p` to poison a region's weather feature. The `Features.set` invocation for that key gets stuck retrying; subsequent set() calls for the same key queue up behind it. Every other Features key keeps working. Edit `rideco/services/features.py` (set `HANDLE_POISON_GRACEFULLY = True`), press `k` then `b` on the features service, and watch the stuck invocation drain.
+- Press `]` a few times to push the rider rate up. Watch surge multiplier respond within a Pricing.refresh tick (10s) as the windowed request rate climbs.
 
-- Stop one service mid-trip (find its PID in the `[service-name]` lines and kill it, or just `./scripts/stop.sh` to wipe everything), wait, restart with `./scripts/demo-t1.sh restart`. The pending `Trip.confirm` invocations resume from where they suspended; the matching loop picks back up. No state lost.
-- `./scripts/spike-region.sh NYC` while SF is already halted. Two regions queued; one human verdict per region to drain.
-- Write a feature directly (`./scripts/set-feature.sh SF accident_density 0.9`) and watch the next `RegionSafetyAgent[SF].tick` catch it.
-- In the Web UI, find a `RegionSafetyAgent.tick` invocation in *suspended* state, click through to its journal — every step is recorded, including the awakeable it's waiting on.
+## Low-level scripts (appendix)
 
-## Scripts reference
+The TUI is the primary entry point. The shell scripts under `scripts/`
+are the building blocks the TUI itself orchestrates, and they remain
+useful when you want to script around the system without the TUI.
 
 | Script | Purpose |
 |---|---|
-| `./scripts/demo-t1.sh [fresh\|restart]` | Terminal 1 driver (fresh wipes state, restart picks up code changes) |
-| `./scripts/demo-t2.sh` | Terminal 2 guided 3-phase walkthrough |
-| `./scripts/reset.sh` | Wipe Restate state and restart the container |
-| `./scripts/serve-all.sh` | Launch all 12 services as separate hypercorn processes (foreground, Ctrl+C tears all down) |
+| `./scripts/tui.sh` | Launch the TUI — primary entry point |
+| `./scripts/serve-all.sh` | Launch all 12 services as separate hypercorn processes (foreground, Ctrl+C tears all down) — what the TUI does for you |
 | `./scripts/register-all.sh` | Register all 12 deployments with Restate |
 | `./scripts/stop.sh` | Kill anything listening on 9080–9091 |
-| `./scripts/setup-region.sh <region>` | Initialize a region: clear features + one idle driver |
-| `./scripts/make-trip.sh <trip_id> <region>` | Rider request + confirm (sync; confirm waits for match) |
-| `./scripts/make-trip-send.sh <trip_id> <region>` | Same but fire-and-forget request_ride |
-| `./scripts/complete-trip.sh <trip_id>` | Mark a trip complete |
-| `./scripts/spike-region.sh [region]` | Force a region's features into unsafe territory (triggers RegionSafetyAgent to halt) |
-| `./scripts/show-region.sh [region]` | Pretty-print one region's RegionSafetyAgent + Dispatch state |
-| `./scripts/show-regions.sh` | At-a-glance table across all four regions (active?, halts, risk, drivers/pending, awakeable) |
-| `./scripts/watch-regions.sh` | Live dashboard — same columns, updates in place every second |
-| `./scripts/cancel-trip.sh <trip_id>` | Cancel a trip |
-| `./scripts/set-feature.sh <region> <feature> <value>` | Write a feature directly via HTTP |
+| `./scripts/reset.sh` | Wipe Restate state and restart the container |
+| `./scripts/make-trip.sh <id> <region>` | Rider request + confirm (sync; confirm waits for match) |
+| `./scripts/cancel-trip.sh <id>` | Cancel a trip |
+| `./scripts/spike-region.sh [region]` | Force a region's features into unsafe territory (triggers RegionSafetyAgent halt) |
 | `./scripts/poison.sh [region]` | Publish the POISON sentinel into Features for that region |
 | `./scripts/approve.sh <awakeable_id> [verdict]` | Resolve a suspended RegionSafetyAgent awakeable |
-| `./scripts/show-trip.sh <trip_id>` | Pretty-print Trip state with a status legend |
+| `./scripts/set-feature.sh <region> <feature> <value>` | Write a feature directly via HTTP |
+| `./scripts/show-trip.sh <id>` | Pretty-print Trip state |
+| `./scripts/show-region.sh [region]` | Pretty-print one region's RegionSafetyAgent + Dispatch state |
+| `./scripts/show-regions.sh` | One-shot table across all regions |
 | `./scripts/show-invocations.sh` | `restate invocations list` with a status legend |
+| `./scripts/watch-regions.sh` | Live dashboard (older curl-based version; the TUI's Regions table is the modern equivalent) |
+| `./scripts/demo-t1.sh` / `demo-t2.sh` | Original three-terminal demo flow, superseded by the TUI |
 
 ## Versions
 
@@ -486,20 +521,21 @@ rideco/
 ├── architecture.svg           # diagram, embedded above
 ├── docker-compose.yml         # restate-server 1.6.2 — the whole stack
 ├── hypercorn-config.toml      # ASGI defaults (per-service --bind passes overrides)
-├── pyproject.toml             # restate_sdk[serde], hypercorn, httpx, rich
+├── pyproject.toml             # restate_sdk[serde], hypercorn, httpx, rich, textual
 ├── Makefile                   # serve, register, stop
-├── scripts/                   # demo scripts — see Scripts reference above
+├── scripts/                   # tui.sh entry point + low-level building blocks
 ├── rideco/
-│   ├── shared/                # types, region defs, color logging w/ flow tags
+│   ├── shared/                # types, region defs, logging (log_in / log_out / log)
 │   ├── services/              # app: trip, offers, dispatch, locations, pricing,
 │   │                          #      eta, features, region_safety_agent
 │   │                          # sim: sim_rider, sim_driver, sim_mapping,
 │   │                          #      sim_control (load generators on Restate)
-│   └── sim/                   # watch_regions — live dashboard (external)
+│   ├── tui/                   # Textual app — owns the whole stack lifecycle
+│   └── sim/                   # watch_regions — older external dashboard
 ```
 
-Each service runs as its own hypercorn process on its own port
-(`serve-all.sh` spawns all twelve). They never call each other directly —
-every cross-service hop goes through Restate, so killing or restarting
-one process has zero effect on the others. The TUI in development takes
-this one step further by owning the per-service lifecycle.
+Each service runs as its own hypercorn process on its own port. They
+never call each other directly — every cross-service hop goes through
+Restate, so killing or restarting one process has zero effect on the
+others. The TUI owns the lifecycle of all twelve (each spawned in its
+own process group so a kill cleans up cleanly).
