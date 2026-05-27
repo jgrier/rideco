@@ -52,6 +52,10 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
         "total_matched": matched,
         "total_completed": completed,
         "in_flight": max(0, matched - completed),
+        # Exposed for the TUI's "latest trip" tracker. Updated on every
+        # enqueue so it reflects the most recently *started* trip in
+        # this region (not just whatever's still in pending).
+        "last_enqueued_trip_id": await ctx.get("last_enqueued_trip_id", type_hint=str),
     }
 
 
@@ -114,6 +118,9 @@ async def enqueue_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
     pending = (await ctx.get("pending_trips", type_hint=list)) or []
     pending.append({"trip_id": trip_id, "origin": origin, "awakeable": awakeable})
     ctx.set("pending_trips", pending)
+    # Surface the most recent trip ID so the TUI's "latest trip" panel
+    # can target it without having to scrape the pending list.
+    ctx.set("last_enqueued_trip_id", trip_id)
 
     already_running = (await ctx.get("loop_running", type_hint=bool)) or False
     if not already_running:

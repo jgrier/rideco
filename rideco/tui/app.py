@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+import webbrowser
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -28,7 +29,7 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
@@ -297,6 +298,8 @@ HELP_TEXT = """[bold]RideCo TUI[/bold]
   [yellow]d[/yellow]    toggle demo mode — guided 8-step walkthrough of the
         whole halt/approve/drain narrative + Restate UI callouts
   [yellow]n[/yellow] / [yellow]N[/yellow]   next / previous demo step (while demo is on)
+  [yellow]o[/yellow]    open Restate UI in the browser (jumps to the page
+        the current demo step references, or root otherwise)
 
 [bold cyan]What's running[/bold cyan]
   The TUI owns restate-server, the twelve service hypercorns, and
@@ -307,6 +310,133 @@ HELP_TEXT = """[bold]RideCo TUI[/bold]
 RESTATE_UI = "http://localhost:9070"
 
 
+SERVICE_NARRATIVES: dict[str, str] = {
+    "trip": (
+        "[bold]Per-trip Virtual Object — lifecycle state machine.[/bold]\n\n"
+        "Handlers:\n"
+        "  · [yellow]request_ride[/yellow]  sync entry — fans out to Offers (which fans into ETA + Pricing)\n"
+        "  · [yellow]confirm[/yellow]       enqueues into Dispatch, then SUSPENDS on an awakeable\n"
+        "  · [yellow]complete[/yellow]      auto-fired by a delayed self-send after ride duration\n"
+        "  · [yellow]cancel[/yellow]        terminal\n"
+        "  · [yellow]get[/yellow]           shared read\n\n"
+        "The dispatch dependency is one-way: Trip hands Dispatch an "
+        "awakeable token; Dispatch resolves it from the other side. "
+        "Trip never imports Dispatch's matching logic."
+    ),
+    "offers": (
+        "[bold]Stateless service — pure synthesis.[/bold]\n\n"
+        "  · [yellow]generate[/yellow]  fans out to ETA.estimate and Pricing.quote "
+        "in parallel, composes a ranked offer set across car classes, "
+        "selects one. Called once per request_ride; no state of its own.\n\n"
+        "The call graph IS the workflow — no orchestrator, no DAG "
+        "framework, no queue plumbing. Just await."
+    ),
+    "eta": (
+        "[bold]Stateless service — arrival-time prediction.[/bold]\n\n"
+        "  · [yellow]estimate[/yellow]  haversine distance × weather multiplier × "
+        "accident-density multiplier; reliability score on the side.\n\n"
+        "Production uses GBDT models with reliability SLAs per ETA "
+        "bracket. The mocked formula here takes the same inputs and "
+        "returns the same shape so the surrounding architecture lands."
+    ),
+    "pricing": (
+        "[bold]Per-region Virtual Object — surge multiplier.[/bold]\n\n"
+        "  · [yellow]refresh[/yellow]  every 10s via delayed self-send. Reads "
+        "weather / accident_density / windowed ride-request rate from "
+        "Features, recomputes multiplier.\n"
+        "  · [yellow]quote[/yellow]    returns base × multiplier for a distance.\n"
+        "  · [yellow]note_demand[/yellow] / [yellow]note_supply[/yellow]  bump cumulative counters.\n\n"
+        "Surge has BOTH a cumulative supply/demand ratio AND a rolling "
+        "60s request-rate signal from the Features aggregate — recent "
+        "demand intensity beats all-time demand."
+    ),
+    "locations": (
+        "[bold]Per-driver Virtual Object — GPS + status state.[/bold]\n\n"
+        "  · [yellow]ping[/yellow]        smoothed position (EMA here; MPF + UKF in production)\n"
+        "  · [yellow]set_status[/yellow]  OFFLINE/IDLE/EN_ROUTE/ON_TRIP transitions\n"
+        "  · [yellow]accept_trip[/yellow] driver took an assignment\n"
+        "  · [yellow]get_position[/yellow] shared read\n\n"
+        "Going IDLE registers the driver in the regional Dispatch pool; "
+        "leaving IDLE deregisters. That's how supply availability flows "
+        "into matching without a separate registry service."
+    ),
+    "features": (
+        "[bold]Composite-key Virtual Object — online feature store.[/bold]\n\n"
+        "Two shapes on the same VO, on different state slots:\n\n"
+        "  [yellow]set[/yellow] / [yellow]get[/yellow]                 point-value features "
+        "(last-write-wins). Used for region:SF:weather, region:SF:accident_density.\n"
+        "  [yellow]record_event[/yellow] / [yellow]event_rate[/yellow]  rolling 60s aggregate over an "
+        "event stream. Used for events:region:SF:ride_request.\n\n"
+        "Per-key serialization means a stuck handler on one key "
+        "(poison-pill demo) blocks only that key — every other Features "
+        "VO keeps working."
+    ),
+    "dispatch": (
+        "[bold]Per-region Virtual Object — batched matching round.[/bold]\n\n"
+        "  · [yellow]close_epoch[/yellow]  every 5s via delayed self-send. Snapshots "
+        "pending trips + idle drivers, runs nearest-driver match, "
+        "resolves each trip's awakeable with the assignment.\n"
+        "  · [yellow]enqueue_trip[/yellow] · [yellow]register_driver[/yellow] · [yellow]deregister_driver[/yellow]\n"
+        "  · [yellow]set_active[/yellow]   RegionSafetyAgent flips this false on halt.\n\n"
+        "When active=false, close_epoch skips matching but keeps "
+        "ticking — so resume after a halt is immediate."
+    ),
+    "region_safety_agent": (
+        "[bold]Per-region Virtual Object — AI safety monitor.[/bold]\n\n"
+        "  · [yellow]tick[/yellow]  every 10s via delayed self-send. Reads region "
+        "features, scores composite risk via [yellow]ctx.run_typed[/yellow] "
+        "(a mocked LLM — journaled for replay determinism).\n"
+        "  · When risk ≥ 0.6 and dispatch active: sends "
+        "Dispatch.set_active(false), creates an awakeable, SUSPENDS "
+        "until a human verdict arrives.\n\n"
+        "Human-in-the-loop, durable suspend — the showcase for "
+        "awakeables. No process held while waiting; hours can pass; "
+        "host can restart and the awakeable survives."
+    ),
+    "sim_rider": (
+        "[bold]Per-rider Virtual Object — durable load generator.[/bold]\n\n"
+        "  · [yellow]tick[/yellow]   pick a region, call Trip.request_ride (sync), send "
+        "Trip.confirm (async), self-tick at Poisson-jittered cadence.\n"
+        "  · [yellow]start[/yellow] / [yellow]pause[/yellow] / [yellow]resume[/yellow] / [yellow]set_rate[/yellow]\n\n"
+        "Each rider VO holds its own rate and pause flag. Pause/resume "
+        "is just a normal handler call — no SIGUSR1, no side-channel "
+        "control plane. Same primitives the app uses."
+    ),
+    "sim_driver": (
+        "[bold]Per-driver Virtual Object — durable load generator.[/bold]\n\n"
+        "  · [yellow]start[/yellow]  bootstraps the driver as IDLE via "
+        "Locations.set_status (which registers it in the regional "
+        "Dispatch pool) and bumps Pricing.note_supply.\n"
+        "  · [yellow]tick[/yellow]   pings position to Locations every ~2s; self-tick.\n"
+        "  · [yellow]pause[/yellow] / [yellow]resume[/yellow]\n\n"
+        "Drivers pin to a region; riders don't (each request picks a "
+        "fresh region) — that's why a small rider pool covers all "
+        "regions over time."
+    ),
+    "sim_mapping": (
+        "[bold]Per-region Virtual Object — weather + accident feed.[/bold]\n\n"
+        "  · [yellow]start[/yellow]  on first start, BOOTSTRAPS the region's "
+        "Pricing.refresh and RegionSafetyAgent.start_monitoring cadence "
+        "loops (one-way kick).\n"
+        "  · [yellow]tick[/yellow]   emits weather + accident_density to Features "
+        "every 12s. Stays in safe ranges by default; "
+        "[yellow]./scripts/spike-region.sh[/yellow] or the TUI's [yellow]s[/yellow] key forces it unsafe."
+    ),
+    "sim_control": (
+        "[bold]Singleton Virtual Object (key='global') — sim fleet control plane.[/bold]\n\n"
+        "Holds the configured drivers/riders count so the operator "
+        "doesn't have to remember sizes.\n\n"
+        "  · [yellow]start_all[/yellow] / [yellow]stop_all[/yellow]\n"
+        "  · [yellow]pause_riders[/yellow] / [yellow]resume_riders[/yellow] / [yellow]set_rider_rate[/yellow]\n"
+        "  · [yellow]pause_drivers[/yellow] / [yellow]resume_drivers[/yellow]\n"
+        "  · [yellow]pause_mapping[/yellow] / [yellow]resume_mapping[/yellow]\n\n"
+        "Fan-out to per-key sim VOs via ctx.object_send. Operators "
+        "(TUI, scripts, curl) drive the fleet exactly the way they "
+        "drive the app."
+    ),
+}
+
+
 @dataclass(frozen=True)
 class DemoStep:
     title: str
@@ -314,6 +444,9 @@ class DemoStep:
     action: str     # what the operator should press in the TUI
     watch: str      # what to look for here in the TUI
     restate: str    # what to look at in the Restate UI
+    # URL `o` opens for this step. Defaults to the UI root; specific
+    # steps can override to land deeper if we know the route.
+    restate_url: str = "http://localhost:9070"
 
 
 DEMO_STEPS: list[DemoStep] = [
@@ -422,8 +555,8 @@ DEMO_STEPS: list[DemoStep] = [
             "window per key (record_event handler). Pricing.refresh "
             "reads the rate every 10s (event_rate shared handler) and "
             "folds it into the multiplier. Same VO holds both shapes — "
-            "point-value features (set/get) AND event streams "
-            "(record_event/event_rate)."
+            "point-value features (set/get) AND aggregates over event "
+            "streams (record_event/event_rate)."
         ),
         action="Arrow down to [yellow]pricing[/yellow] in the Services table to tail its log.",
         watch="Each refresh line shows [dim]request_rate_per_s=X.XXX[/dim] — that's the windowed signal. Spike the rider rate with [yellow]][/yellow] to push it higher; surge multiplier responds within a refresh tick.",
@@ -627,6 +760,79 @@ class SimPanel(Static):
         )
 
 
+class LatestTripPanel(Static):
+    """Single-line ticker for the most recently enqueued trip across
+    regions. Sourced from Dispatch.get.last_enqueued_trip_id every poll;
+    enriched with status/multiplier from a Trip.get poll on the winner."""
+
+    DEFAULT = "[dim]Latest trip: (none yet — sims are starting up)[/dim]"
+
+    def on_mount(self) -> None:
+        self.update(self.DEFAULT)
+
+    def show(self, trip_id: Optional[str], snap: dict) -> None:
+        if not trip_id:
+            self.update(self.DEFAULT)
+            return
+        status = snap.get("status")
+        status_s = _styled_status(status) if status else "[dim]—[/dim]"
+        region = snap.get("region") or "—"
+        driver = snap.get("assigned_driver_id") or ""
+        mult = snap.get("multiplier")
+        mult_s = f"{mult:.2f}x" if isinstance(mult, (int, float)) else "—"
+        driver_s = f"   driver=[white]{driver}[/white]" if driver else ""
+        self.update(
+            f"[bold]Latest trip[/bold] [cyan]{trip_id}[/cyan]   "
+            f"region=[white]{region}[/white]   "
+            f"status={status_s}   "
+            f"mult=[white]{mult_s}[/white]"
+            f"{driver_s}   "
+            f"[dim]press[/dim] [yellow]t[/yellow] [dim]for full detail[/dim]"
+        )
+
+
+class RightPane(Static):
+    """Right side of the bottom row. One of:
+      · demo step       (when demo mode is on — always wins)
+      · service narrative  (when a service row is selected, demo off)
+      · default hint     (otherwise)
+    """
+
+    DEFAULT = (
+        "[bold]Side pane[/bold]\n\n"
+        "[dim]Press[/dim] [yellow]d[/yellow] [dim]for the guided demo walkthrough.[/dim]\n"
+        "[dim]Or select a service in the Services table to see what it does.[/dim]"
+    )
+
+    def on_mount(self) -> None:
+        self.update(self.DEFAULT)
+
+    def show_default(self) -> None:
+        self.update(self.DEFAULT)
+
+    def show_narrative(self, svc_name: str) -> None:
+        body = SERVICE_NARRATIVES.get(svc_name)
+        if body is None:
+            self.update(f"[bold cyan]{svc_name}[/bold cyan]\n\n[dim]No description.[/dim]")
+            return
+        self.update(f"[bold cyan]{svc_name}[/bold cyan]\n\n{body}")
+
+    def show_demo(self, idx: int, step: "DemoStep") -> None:
+        header = (
+            f"[bold cyan]Demo · Step {idx + 1} of {len(DEMO_STEPS)}[/bold cyan]"
+            f"   [dim]([yellow]n[/yellow] next · [yellow]N[/yellow] back "
+            f"· [yellow]d[/yellow] exit)[/dim]"
+        )
+        title = f"[bold]{step.title}[/bold]"
+        body = step.body
+        action = f"[bold yellow]Action:[/bold yellow]    {step.action}"
+        watch = f"[bold green]Watch here:[/bold green]   {step.watch}"
+        restate = f"[bold magenta]Restate UI:[/bold magenta]   {step.restate}"
+        self.update(
+            f"{header}\n\n{title}\n\n{body}\n\n{action}\n\n{watch}\n\n{restate}",
+        )
+
+
 class BottomPane(Static):
     """Multi-mode bottom area: help, boot progress, teardown progress, or
     a tailing log view of the currently-selected service."""
@@ -679,24 +885,6 @@ class BottomPane(Static):
             ]
             body = Text("\n".join(trimmed), no_wrap=True, overflow="crop")
         self.update(Group(header, Text(""), body))
-
-    def show_demo(self, idx: int, step: DemoStep) -> None:
-        """Render a demo walkthrough step. The user can still hit other
-        TUI keys (s/a/m/c/p/...) while reading — the demo's whole point
-        is to tell them what to press here."""
-        header = (
-            f"[bold cyan]Demo · Step {idx + 1} of {len(DEMO_STEPS)}[/bold cyan]"
-            f"   [dim]([yellow]n[/yellow] next · [yellow]N[/yellow] back "
-            f"· [yellow]d[/yellow] exit)[/dim]"
-        )
-        title = f"[bold]{step.title}[/bold]"
-        body = step.body
-        action = f"[bold yellow]Action:[/bold yellow]    {step.action}"
-        watch = f"[bold green]Watch here:[/bold green]   {step.watch}"
-        restate = f"[bold magenta]Restate UI:[/bold magenta]   {step.restate}"
-        self.update(
-            f"{header}\n\n{title}\n\n{body}\n\n{action}\n\n{watch}\n\n{restate}",
-        )
 
     def show_region(self, region: str, snap: dict) -> None:
         """Render a focused detail view for the highlighted region."""
@@ -758,7 +946,10 @@ class RidecoApp(App):
     #regions { height: 9; }
     #services { height: 15; }
     #sim_panel { height: 1; padding: 0 2; }
-    #bottom { padding: 1 2; border: round $accent; }
+    #latest_trip { height: 1; padding: 0 2; }
+    #bottom_row { height: 1fr; }
+    #bottom_left { width: 1fr; padding: 1 2; border: round $accent; }
+    #bottom_right { width: 1fr; padding: 1 2; border: round $accent; }
     """
 
     BINDINGS = [
@@ -780,6 +971,7 @@ class RidecoApp(App):
         Binding("d", "demo_toggle", "Demo"),
         Binding("n", "demo_next", "Next step", show=False),
         Binding("N", "demo_prev", "Prev step", show=False),
+        Binding("o", "open_restate", "Open Restate UI"),
     ]
 
     def __init__(self, auto_boot: bool = True) -> None:
@@ -819,13 +1011,24 @@ class RidecoApp(App):
         self._refreshing_sim = False
         # Demo walkthrough state. _demo_step is None when demo is off.
         self._demo_step: Optional[int] = None
+        # Latest-trip ticker state. _latest_trip_id is whichever region
+        # most-recently updated its dispatch.last_enqueued_trip_id.
+        # _per_region_latest tracks the last-observed id per region so
+        # we can detect changes; _latest_trip_snap is the most recent
+        # Trip.get response so the ticker can render status + multiplier.
+        self._latest_trip_id: Optional[str] = None
+        self._per_region_latest: dict[str, str] = {}
+        self._latest_trip_snap: dict = {}
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield RegionsTable(id="regions")
         yield ServicesTable(id="services")
         yield SimPanel(id="sim_panel")
-        yield BottomPane(id="bottom")
+        yield LatestTripPanel(id="latest_trip")
+        with Horizontal(id="bottom_row"):
+            yield BottomPane(id="bottom_left")
+            yield RightPane(id="bottom_right")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -837,6 +1040,7 @@ class RidecoApp(App):
         self.set_interval(1.0, self._refresh_regions)
         self.set_interval(0.8, self._refresh_services)
         self.set_interval(2.0, self._refresh_sim)
+        self.set_interval(2.0, self._refresh_latest_trip)
         if self._auto_boot:
             asyncio.create_task(self._boot())
 
@@ -903,6 +1107,15 @@ class RidecoApp(App):
                 return
             for region, snap in zip(regions, snaps):
                 table.apply(region, snap)
+            # Track the most recently enqueued trip across regions for
+            # the LatestTripPanel ticker. Each Dispatch.get returns its
+            # last_enqueued_trip_id; whichever region's id has changed
+            # since we last looked is the freshest activity.
+            for region, snap in zip(regions, snaps):
+                tid = (snap.get("dispatch") or {}).get("last_enqueued_trip_id")
+                if tid and tid != self._per_region_latest.get(region):
+                    self._per_region_latest[region] = tid
+                    self._latest_trip_id = tid
             # If the bottom pane is in region-detail mode, repaint it
             # from the snapshot we just pulled so it streams at the
             # same cadence.
@@ -919,6 +1132,31 @@ class RidecoApp(App):
                     pass
         finally:
             self._refreshing_regions = False
+
+    async def _refresh_latest_trip(self) -> None:
+        """Poll Trip.get for the currently-tracked latest trip and update
+        the ticker. Cheap: one request every 2s, only fires when we know
+        a trip id."""
+        try:
+            panel = self.query_one(LatestTripPanel)
+        except Exception:
+            return
+        trip_id = self._latest_trip_id
+        if not trip_id:
+            panel.show(None, {})
+            return
+        try:
+            r = await self._client.post(
+                f"{INGRESS}/Trip/{trip_id}/get", json={}, timeout=1.0,
+            )
+            r.raise_for_status()
+            self._latest_trip_snap = r.json()
+        except Exception:
+            # Keep showing whatever we last had, just refresh the panel
+            # with cached state. Don't blank — that flickers on transient
+            # ingress hiccups.
+            pass
+        panel.show(trip_id, self._latest_trip_snap)
 
     async def _refresh_sim(self) -> None:
         if self._refreshing_sim:
@@ -1004,6 +1242,13 @@ class RidecoApp(App):
                 self.query_one(BottomPane).show_log(svc)
             except Exception:
                 pass
+            # Right pane: show the service narrative — unless the demo
+            # is active, in which case the demo always wins.
+            if self._demo_step is None:
+                try:
+                    self.query_one(RightPane).show_narrative(name)
+                except Exception:
+                    pass
 
     async def _paint_region_now(self, region: str) -> None:
         """One-shot fetch + paint so switching to a region row shows
@@ -1185,31 +1430,36 @@ class RidecoApp(App):
             self._resetting = False
 
     def action_trip_detail(self) -> None:
-        """Open the trip-detail modal, pre-filled with the last manual trip."""
+        """Open the trip-detail modal. Defaults to the latest enqueued
+        trip across all regions (sim-generated or manual) — falls back
+        to the last manually-made one if we haven't observed any yet."""
+        initial = self._latest_trip_id or self._last_manual_trip or ""
         self.push_screen(
-            TripDetailScreen(
-                client=self._client,
-                initial_trip_id=self._last_manual_trip or "",
-            ),
+            TripDetailScreen(client=self._client, initial_trip_id=initial),
         )
 
     # ───── demo walkthrough ──────────────────────────────────────────
 
     def action_demo_toggle(self) -> None:
-        """Enter or exit demo mode. While active, the bottom pane shows
-        the current step; the user keeps using normal TUI keys to
-        actually do the things the step describes."""
+        """Enter or exit demo mode. Demo lives in the right pane. The
+        left pane stays free for region detail / service log / help, so
+        you can read the step AND watch logs at the same time."""
         if self._demo_step is None:
             self._demo_step = 0
             self._show_demo_step()
             self.notify("demo mode on — n next · N back · d exit")
         else:
             self._demo_step = None
-            self._mode = MODE_HELP
+            # On exit: restore narrative if a service is selected,
+            # else fall back to the default hint.
             try:
-                self.query_one(BottomPane).show_help()
+                right = self.query_one(RightPane)
             except Exception:
-                pass
+                return
+            if self._selected_service:
+                right.show_narrative(self._selected_service)
+            else:
+                right.show_default()
             self.notify("demo mode off")
 
     def action_demo_next(self) -> None:
@@ -1234,11 +1484,24 @@ class RidecoApp(App):
         if self._demo_step is None:
             return
         step = DEMO_STEPS[self._demo_step]
-        self._mode = MODE_DEMO
         try:
-            self.query_one(BottomPane).show_demo(self._demo_step, step)
+            self.query_one(RightPane).show_demo(self._demo_step, step)
         except Exception:
             pass
+
+    def action_open_restate(self) -> None:
+        """Open the Restate UI in the user's browser. If demo mode is
+        active, jump to the URL the current step references; otherwise
+        open the root."""
+        if self._demo_step is not None:
+            url = DEMO_STEPS[self._demo_step].restate_url
+        else:
+            url = RESTATE_UI
+        try:
+            webbrowser.open(url)
+            self.notify(f"opened {url}")
+        except Exception as e:
+            self.notify(f"open failed: {e}", severity="error")
 
     # ───── sim control ───────────────────────────────────────────────
 
