@@ -18,7 +18,7 @@ workflow.
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.services import eta as eta_svc
 from rideco.services import pricing as pricing_svc
 
@@ -44,13 +44,14 @@ async def generate(ctx: restate.Context, payload: dict) -> dict:
     origin = payload["origin"]
     destination = payload["destination"]
     region = payload["region"]
+    log_in("generate", trip=trip_id, region=region)
 
-    log("Offers", "→ ETA.estimate", flow="sync", trip=trip_id, region=region)
+    log_out("call", "ETA.estimate", trip=trip_id, region=region)
     eta_result = await ctx.service_call(
         eta_svc.estimate,
         arg={"origin": origin, "destination": destination, "region": region},
     )
-    log("Offers", "→ Pricing.quote", flow="sync", trip=trip_id, region=region)
+    log_out("call", "Pricing.quote", trip=trip_id, region=region)
     price = await ctx.object_call(
         pricing_svc.quote,
         key=region,
@@ -71,7 +72,7 @@ async def generate(ctx: restate.Context, payload: dict) -> dict:
     # etc.
     selected = candidates[0]
 
-    log("Offers", "generated", trip=trip_id, region=region, candidates=len(candidates),
+    log("generated", trip=trip_id, region=region, candidates=len(candidates),
         selected_class=selected["car_class"], selected_eta=selected["eta_seconds"],
         selected_price=selected["price_cents"], multiplier=price["multiplier"])
 

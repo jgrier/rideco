@@ -13,7 +13,7 @@ Dispatch pool when they come online or go offline.
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.types import (
     DRIVER_EN_ROUTE,
     DRIVER_IDLE,
@@ -28,6 +28,7 @@ locations = restate.VirtualObject("Locations")
 @locations.handler("ping")
 async def ping(ctx: restate.ObjectContext, payload: dict) -> dict:
     """Receive a raw GPS observation. Apply mocked smoothing. Store result."""
+    log_in("ping", driver=ctx.key())
     raw_lat = float(payload["lat"])
     raw_lng = float(payload["lng"])
     prev_lat = await ctx.get("matched_lat", type_hint=float)
@@ -49,6 +50,7 @@ async def set_status(ctx: restate.ObjectContext, payload: dict) -> dict:
     """Driver going online/offline updates status and registers with the regional pool."""
     status = payload["status"]
     region = payload.get("region")
+    log_in("set_status", driver=ctx.key(), status=status, region=region)
     prev_status = await ctx.get("status", type_hint=str)
     prev_region = await ctx.get("region", type_hint=str)
     ctx.set("status", status)
@@ -59,29 +61,29 @@ async def set_status(ctx: restate.ObjectContext, payload: dict) -> dict:
     going_idle = status == DRIVER_IDLE and prev_status != DRIVER_IDLE
     leaving_idle = status != DRIVER_IDLE and prev_status == DRIVER_IDLE
     if going_idle and region:
-        log("Locations", "→ Dispatch.register_driver", flow="send", driver=ctx.key(), region=region)
+        log_out("send", "Dispatch.register_driver", driver=ctx.key(), region=region)
         ctx.object_send(dispatch_svc.register_driver, key=region, arg={"driver_id": ctx.key()})
     elif leaving_idle and prev_region:
-        log("Locations", "→ Dispatch.deregister_driver", flow="send", driver=ctx.key(), region=prev_region)
+        log_out("send", "Dispatch.deregister_driver", driver=ctx.key(), region=prev_region)
         ctx.object_send(dispatch_svc.deregister_driver, key=prev_region, arg={"driver_id": ctx.key()})
 
-    log("Locations", "status", driver=ctx.key(), status=status, region=region or prev_region)
+    log("status", driver=ctx.key(), status=status, region=region or prev_region)
     return {"driver_id": ctx.key(), "status": status}
 
 
 @locations.handler("accept_trip")
 async def accept_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
     trip_id = payload["trip_id"]
+    log_in("accept_trip", driver=ctx.key(), trip=trip_id)
     region = await ctx.get("region", type_hint=str)
     ctx.set("current_trip_id", trip_id)
     ctx.set("status", DRIVER_EN_ROUTE)
     # Pull the driver out of the region's idle pool while they're driving.
     # `set_status(idle, region)` from Trip.complete re-registers them.
     if region:
-        log("Locations", "→ Dispatch.deregister_driver", flow="send",
-            driver=ctx.key(), region=region)
+        log_out("send", "Dispatch.deregister_driver", driver=ctx.key(), region=region)
         ctx.object_send(dispatch_svc.deregister_driver, key=region, arg={"driver_id": ctx.key()})
-    log("Locations", "accept", driver=ctx.key(), trip=trip_id)
+    log("accepted", driver=ctx.key(), trip=trip_id)
     return {"driver_id": ctx.key(), "trip_id": trip_id}
 
 

@@ -10,7 +10,7 @@ import math
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.types import ENTITY_REGION, feature_key
 from rideco.services import features as features_svc
 
@@ -43,18 +43,19 @@ async def estimate(ctx: restate.Context, payload: dict) -> dict:
     origin = payload["origin"]
     destination = payload["destination"]
     region = payload["region"]
+    log_in("estimate", region=region)
 
     distance_m = _haversine_m(origin["lat"], origin["lng"], destination["lat"], destination["lng"])
 
+    weather_key = feature_key(ENTITY_REGION, region, "weather")
+    accidents_key = feature_key(ENTITY_REGION, region, "accident_density")
+    log_out("call", "Features.get", key=weather_key)
     weather_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "weather"),
-        arg={"default": "clear"},
+        features_svc.get, key=weather_key, arg={"default": "clear"},
     )
+    log_out("call", "Features.get", key=accidents_key)
     accidents_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "accident_density"),
-        arg={"default": 0.0},
+        features_svc.get, key=accidents_key, arg={"default": 0.0},
     )
 
     base_seconds = distance_m / 11.0  # ~40 km/h baseline
@@ -65,7 +66,7 @@ async def estimate(ctx: restate.Context, payload: dict) -> dict:
     # Reliability: higher when conditions are calm.
     reliability = round(max(0.5, 1.0 - 0.2 * (weather_mult - 1) - 0.3 * (accident_mult - 1)), 2)
 
-    log("ETA", "estimate", region=region, dist_m=int(distance_m),
+    log("estimated", region=region, dist_m=int(distance_m),
         eta_s=eta_seconds, reliability=reliability,
         weather=weather_res.get("value"), accidents=accidents_res.get("value"))
 

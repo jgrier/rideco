@@ -228,17 +228,30 @@ class ServicesTable(DataTable):
         for name, port in SERVICES:
             self.add_row(name, str(port), "", "", "", key=name)
 
+    # Width budgets used by `apply` to compute available cell width for
+    # the last_log column at render time. Adapts to terminal resize on
+    # the next poll cycle. See _max_log_width below.
+    _FIXED_COL_WIDTH = 22 + 6 + 12 + 8   # name + port + status + pid
+    _TABLE_CHROME = 6                     # borders / cell padding / scrollbar
+
+    def _max_log_width(self) -> int:
+        """Available chars for the last_log cell at current terminal width."""
+        return max(20, (self.size.width or 120)
+                   - self._FIXED_COL_WIDTH - self._TABLE_CHROME)
+
     def apply(self, svc: ServiceProc) -> None:
         self.update_cell(svc.name, "status", _status_text(svc.status))
         self.update_cell(svc.name, "pid", str(svc.pid) if svc.pid else "—")
-        # Render as a Rich Text with no_wrap so a long log line gets
-        # ellipsized at the column boundary instead of wrapping into a
-        # tall row — wrapping forces a Textual re-layout on every poll
-        # and visibly hangs the UI when downstream services log
-        # multi-kilobyte tracebacks.
+        # Pre-truncate to the dynamic budget so the auto-sized column
+        # never expands beyond the terminal. no_wrap + overflow stays as
+        # belt-and-suspenders against Rich/Textual rendering quirks.
+        line = svc.last_log or ""
+        budget = self._max_log_width()
+        if len(line) > budget:
+            line = line[:budget - 1] + "…"
         self.update_cell(
             svc.name, "last_log",
-            Text(svc.last_log or "", no_wrap=True, overflow="ellipsis"),
+            Text(line, no_wrap=True, overflow="ellipsis"),
         )
 
 
@@ -459,7 +472,7 @@ class SimPanel(Static):
             f"drivers [yellow]{drivers}[/yellow]   "
             f"mapping [yellow]{map_s}[/yellow]   "
             f"state: {state}   "
-            f"[dim]\\[/\\] rate↓↑   shift+p pause/resume[/dim]"
+            f"[dim]press '\\[' / ']' to nudge rate · shift+p to pause[/dim]"
         )
 
 
@@ -488,10 +501,13 @@ class BottomPane(Static):
     def show_log(self, svc: ServiceProc, height_hint: int = 14) -> None:
         """Render the most-recent log lines for the given service.
 
-        Each line is wrapped in a Rich Text with no_wrap=True so long
-        lines get cropped at the pane boundary instead of wrapping —
-        wrapping multi-kilobyte tracebacks turns this pane into a wall
-        of text and makes Textual re-layout the screen every 0.8s.
+        Lines are pre-truncated to `self.size.width - padding` and then
+        wrapped in a Rich Text with no_wrap=True so long lines get
+        cropped at the pane boundary instead of wrapping. Pre-truncating
+        in app code is the guaranteed fix — relying solely on
+        no_wrap/overflow turns out not to survive Textual's Static
+        rendering path for multi-line content, and a wrapped traceback
+        was the original cause of UI hangs.
         """
         header = Text.from_markup(
             f"[bold cyan]{svc.name}[/bold cyan]"
@@ -504,7 +520,13 @@ class BottomPane(Static):
         if not lines:
             body: Any = Text.from_markup("[dim]no log output yet[/dim]")
         else:
-            body = Text("\n".join(lines), no_wrap=True, overflow="crop")
+            # 4 = border (2) + padding (2). Adapts to terminal resize.
+            budget = max(20, (self.size.width or 120) - 4)
+            trimmed = [
+                (line if len(line) <= budget else line[:budget - 1] + "…")
+                for line in lines
+            ]
+            body = Text("\n".join(trimmed), no_wrap=True, overflow="crop")
         self.update(Group(header, Text(""), body))
 
     def show_region(self, region: str, snap: dict) -> None:

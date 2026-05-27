@@ -16,7 +16,7 @@ import random
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.regions import REGIONS
 from rideco.shared.types import DRIVER_IDLE
 from rideco.services import locations as locations_svc
@@ -45,6 +45,7 @@ async def start(ctx: restate.ObjectContext, payload: dict) -> dict:
     driver_id = ctx.key()
     region = payload.get("region")
     ping_interval_s = float(payload.get("ping_interval_s", 2.0))
+    log_in("start", driver=driver_id, region=region, ping_interval_s=ping_interval_s)
     if not region:
         raise restate.exceptions.TerminalError("region required")
 
@@ -60,17 +61,18 @@ async def start(ctx: restate.ObjectContext, payload: dict) -> dict:
         ctx.set("lng", pos["lng"])
         ctx.set("pings_sent", 0)
 
-        log("DriverSim", "→ Locations.set_status(idle)", flow="sync",
-            driver=driver_id, region=region)
+        log_out("call", "Locations.set_status",
+                driver=driver_id, region=region, status=DRIVER_IDLE)
         await ctx.object_call(
             locations_svc.set_status,
             key=driver_id,
             arg={"status": DRIVER_IDLE, "region": region},
         )
-        log("DriverSim", "→ Pricing.note_supply", flow="send", driver=driver_id, region=region)
+        log_out("send", "Pricing.note_supply", driver=driver_id, region=region)
         ctx.object_send(pricing_svc.note_supply, key=region, arg={"delta": 1})
 
-        log("DriverSim", "online", driver=driver_id, region=region)
+        log("online", driver=driver_id, region=region)
+        log_out(f"send+delay({ping_interval_s:.1f}s)", "DriverSim.tick", driver=driver_id)
         ctx.object_send(tick, key=driver_id, arg={},
                         send_delay=timedelta(seconds=ping_interval_s))
     return {"driver_id": driver_id, "active": True, "region": region}
@@ -78,19 +80,22 @@ async def start(ctx: restate.ObjectContext, payload: dict) -> dict:
 
 @driver_sim.handler("pause")
 async def pause(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
+    log_in("pause", driver=ctx.key())
     ctx.set("active", False)
-    log("DriverSim", "paused", driver=ctx.key())
+    log("paused", driver=ctx.key())
     return {"driver_id": ctx.key(), "active": False}
 
 
 @driver_sim.handler("resume")
 async def resume(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     driver_id = ctx.key()
+    log_in("resume", driver=driver_id)
     was_active = (await ctx.get("active", type_hint=bool)) or False
     ctx.set("active", True)
     if not was_active:
         ping_interval_s = (await ctx.get("ping_interval_s", type_hint=float)) or 2.0
-        log("DriverSim", "resumed", driver=driver_id)
+        log("resumed", driver=driver_id)
+        log_out(f"send+delay({ping_interval_s:.1f}s)", "DriverSim.tick", driver=driver_id)
         ctx.object_send(tick, key=driver_id, arg={},
                         send_delay=timedelta(seconds=ping_interval_s))
     return {"driver_id": driver_id, "active": True}
@@ -99,8 +104,9 @@ async def resume(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 @driver_sim.handler("tick")
 async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     driver_id = ctx.key()
+    log_in("tick", driver=driver_id)
     if not ((await ctx.get("active", type_hint=bool)) or False):
-        log("DriverSim", "tick-stopped (paused)", driver=driver_id)
+        log("tick-stopped (paused)", driver=driver_id)
         return {"driver_id": driver_id, "action": "stopped"}
 
     lat = await ctx.get("lat", type_hint=float)
@@ -113,6 +119,7 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     ctx.set("lat", new_pos["lat"])
     ctx.set("lng", new_pos["lng"])
 
+    log_out("send", "Locations.ping", driver=driver_id)
     ctx.object_send(
         locations_svc.ping,
         key=driver_id,
@@ -121,6 +128,7 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 
     ctx.set("pings_sent", pings_sent)
     ping_interval_s = (await ctx.get("ping_interval_s", type_hint=float)) or 2.0
+    log_out(f"send+delay({ping_interval_s:.1f}s)", "DriverSim.tick", driver=driver_id)
     ctx.object_send(tick, key=driver_id, arg={},
                     send_delay=timedelta(seconds=ping_interval_s))
     return {"driver_id": driver_id, "pings_sent": pings_sent}

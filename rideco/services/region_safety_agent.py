@@ -21,7 +21,7 @@ from datetime import timedelta
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.types import ENTITY_REGION, feature_key
 from rideco.services import dispatch as dispatch_svc
 from rideco.services import features as features_svc
@@ -61,9 +61,10 @@ def _composite_risk(weather: str, accident_density: float) -> dict:
 async def start_monitoring(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     """Boot the per-region tick loop. Idempotent."""
     region = ctx.key()
+    log_in("start_monitoring", region=region)
     already = (await ctx.get("active", type_hint=bool)) or False
     if already:
-        log("RegionSafety", "already-running", region=region)
+        log("already-running", region=region)
         return {"region": region, "active": True}
 
     ctx.set("active", True)
@@ -71,9 +72,9 @@ async def start_monitoring(ctx: restate.ObjectContext, _: dict | None = None) ->
     ctx.set("ticks", 0)
     ctx.set("halts", 0)
 
-    log("RegionSafety", "→ tick in 10s (start)", flow="self", region=region)
+    log_out("send+delay(10s)", "RegionSafetyAgent.tick", region=region, note="start")
     ctx.object_send(tick, key=region, arg={}, send_delay=TICK_INTERVAL)
-    log("RegionSafety", "started", region=region)
+    log("started", region=region)
     return {"region": region, "active": True}
 
 
@@ -81,22 +82,23 @@ async def start_monitoring(ctx: restate.ObjectContext, _: dict | None = None) ->
 async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     """One safety check cycle."""
     region = ctx.key()
+    log_in("tick", region=region)
     if not ((await ctx.get("active", type_hint=bool)) or False):
-        log("RegionSafety", "tick-stopped (not active)", region=region)
+        log("tick-stopped (not active)", region=region)
         return {"region": region, "action": "stopped"}
 
     ticks = ((await ctx.get("ticks", type_hint=int)) or 0) + 1
     ctx.set("ticks", ticks)
 
+    weather_key = feature_key(ENTITY_REGION, region, "weather")
+    accident_key = feature_key(ENTITY_REGION, region, "accident_density")
+    log_out("call", "Features.get", key=weather_key)
     weather_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "weather"),
-        arg={"default": "clear"},
+        features_svc.get, key=weather_key, arg={"default": "clear"},
     )
+    log_out("call", "Features.get", key=accident_key)
     accident_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "accident_density"),
-        arg={"default": 0.0},
+        features_svc.get, key=accident_key, arg={"default": 0.0},
     )
     weather = str(weather_res.get("value") or "clear")
     accidents = float(accident_res.get("value") or 0.0)
@@ -115,18 +117,18 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     if region_active is None:
         region_active = True
 
-    log("RegionSafety", "tick", region=region, n=ticks,
+    log("scored", region=region, n=ticks,
         risk=score["score"], rationale=score["rationale"],
         dispatch_active=region_active)
 
     if score["score"] >= RISK_THRESHOLD and region_active:
         await _halt_and_wait(ctx, region, score)
     elif score["score"] >= RISK_THRESHOLD and not region_active:
-        log("RegionSafety", "still-unsafe (already halted, awaiting verdict)",
+        log("still-unsafe (already halted, awaiting verdict)",
             region=region, risk=score["score"])
 
     if (await ctx.get("active", type_hint=bool)):
-        log("RegionSafety", "→ tick in 10s", flow="self", region=region)
+        log_out("send+delay(10s)", "RegionSafetyAgent.tick", region=region)
         ctx.object_send(tick, key=region, arg={}, send_delay=TICK_INTERVAL)
 
     return {"region": region, "tick": ticks, "risk": score["score"]}
@@ -137,17 +139,17 @@ async def _halt_and_wait(ctx: restate.ObjectContext, region: str, score: dict) -
     halts = ((await ctx.get("halts", type_hint=int)) or 0) + 1
     ctx.set("halts", halts)
 
-    log("RegionSafety", "HALTING dispatch", region=region,
+    log("HALTING dispatch", region=region,
         risk=score["score"], rationale=score["rationale"])
 
-    log("RegionSafety", "→ Dispatch.set_active(false)", flow="send", region=region)
+    log_out("send", "Dispatch.set_active", region=region, active=False)
     ctx.object_send(dispatch_svc.set_active, key=region, arg={"active": False})
     ctx.set("region_active", False)
 
     awakeable_name, verdict_future = ctx.awakeable(type_hint=dict)
     ctx.set("pending_awakeable", awakeable_name)
 
-    log("RegionSafety", "ESCALATE (suspending for human verdict)",
+    log("ESCALATE (suspending for human verdict)",
         region=region, awakeable=awakeable_name,
         resolve_hint=f"./scripts/approve-region.sh {awakeable_name} approve   # or deny")
 
@@ -156,10 +158,10 @@ async def _halt_and_wait(ctx: restate.ObjectContext, region: str, score: dict) -
     decision = str(verdict.get("verdict", "approve"))
     ctx.set("last_verdict", decision)
 
-    log("RegionSafety", "RESUMED", region=region, verdict=decision)
+    log("RESUMED", region=region, verdict=decision)
 
     if decision == "approve":
-        log("RegionSafety", "→ Dispatch.set_active(true)", flow="send", region=region)
+        log_out("send", "Dispatch.set_active", region=region, active=True)
         ctx.object_send(dispatch_svc.set_active, key=region, arg={"active": True})
         ctx.set("region_active", True)
     # else: deny — region stays halted. Future ticks will log "still-unsafe"
@@ -172,7 +174,8 @@ async def force_resume(ctx: restate.ObjectContext, _: dict | None = None) -> dic
     """Manually resume dispatch for this region (out-of-band override —
     used when a previous halt was denied and conditions have since cleared)."""
     region = ctx.key()
-    log("RegionSafety", "→ Dispatch.set_active(true) (force resume)", flow="send", region=region)
+    log_in("force_resume", region=region)
+    log_out("send", "Dispatch.set_active", region=region, active=True, note="force")
     ctx.object_send(dispatch_svc.set_active, key=region, arg={"active": True})
     ctx.set("region_active", True)
     return {"region": region, "region_active": True}
@@ -181,8 +184,9 @@ async def force_resume(ctx: restate.ObjectContext, _: dict | None = None) -> dic
 @region_safety_agent.handler("stop_monitoring")
 async def stop_monitoring(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     region = ctx.key()
+    log_in("stop_monitoring", region=region)
     ctx.set("active", False)
-    log("RegionSafety", "stopped", region=region)
+    log("stopped", region=region)
     return {"region": region, "active": False}
 
 

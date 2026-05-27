@@ -15,7 +15,7 @@ from datetime import timedelta
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.regions import region_base_fare_cents
 from rideco.shared.types import ENTITY_REGION, feature_key
 from rideco.services import features as features_svc
@@ -60,6 +60,7 @@ def _multiplier_from_signals(
 @pricing.handler("quote")
 async def quote(ctx: restate.ObjectContext, payload: dict) -> dict:
     region = ctx.key()
+    log_in("quote", region=region, distance_m=payload.get("distance_m"))
     distance_m = float(payload.get("distance_m", 3000))
     multiplier = (await ctx.get("multiplier", type_hint=float)) or 1.0
     base = region_base_fare_cents(region)
@@ -78,24 +79,26 @@ async def quote(ctx: restate.ObjectContext, payload: dict) -> dict:
 async def refresh(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     """Recompute the multiplier from current features. Reschedules itself."""
     region = ctx.key()
+    log_in("refresh", region=region)
 
+    weather_key = feature_key(ENTITY_REGION, region, "weather")
+    accidents_key = feature_key(ENTITY_REGION, region, "accident_density")
+    rate_key = f"events:region:{region}:ride_request"
+
+    log_out("call", "Features.get", key=weather_key)
     weather_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "weather"),
-        arg={"default": "clear"},
+        features_svc.get, key=weather_key, arg={"default": "clear"},
     )
+    log_out("call", "Features.get", key=accidents_key)
     accidents_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "accident_density"),
-        arg={"default": 0.0},
+        features_svc.get, key=accidents_key, arg={"default": 0.0},
     )
     # Windowed demand-intensity from the Features rolling aggregate.
     # Trip.request_ride fire-and-forgets a record_event per request;
     # this read returns events/sec over the last 60s.
+    log_out("call", "Features.event_rate", key=rate_key)
     rate_res = await ctx.object_call(
-        features_svc.event_rate,
-        key=f"events:region:{region}:ride_request",
-        arg={},
+        features_svc.event_rate, key=rate_key, arg={},
     )
     supply = (await ctx.get("supply_count", type_hint=int)) or 0
     demand = (await ctx.get("demand_count", type_hint=int)) or 0
@@ -110,17 +113,19 @@ async def refresh(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     )
     ctx.set("multiplier", multiplier)
     ctx.set("last_refresh_ms", await ctx.time())
-    log("Pricing", "refresh", region=region, multiplier=multiplier,
+    log("refreshed", region=region, multiplier=multiplier,
         weather=weather_res.get("value"), accidents=accidents_res.get("value"),
         request_rate_per_s=request_rate)
 
-    log("Pricing", "→ refresh in 10s", flow="self", region=region)
+    delay_s = int(REFRESH_INTERVAL.total_seconds())
+    log_out(f"send+delay({delay_s}s)", "Pricing.refresh", region=region)
     ctx.object_send(refresh, key=region, arg={}, send_delay=REFRESH_INTERVAL)
     return {"region": region, "multiplier": multiplier}
 
 
 @pricing.handler("note_demand")
 async def note_demand(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
+    log_in("note_demand", region=ctx.key())
     demand = ((await ctx.get("demand_count", type_hint=int)) or 0) + 1
     ctx.set("demand_count", demand)
     return {"region": ctx.key(), "demand_count": demand}
@@ -129,6 +134,7 @@ async def note_demand(ctx: restate.ObjectContext, _: dict | None = None) -> dict
 @pricing.handler("note_supply")
 async def note_supply(ctx: restate.ObjectContext, payload: dict) -> dict:
     delta = int(payload.get("delta", 1))
+    log_in("note_supply", region=ctx.key(), delta=delta)
     supply = ((await ctx.get("supply_count", type_hint=int)) or 0) + delta
     ctx.set("supply_count", max(supply, 0))
     return {"region": ctx.key(), "supply_count": supply}

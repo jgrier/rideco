@@ -17,7 +17,7 @@ import uuid
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.regions import REGIONS, all_regions
 from rideco.services import trip as trip_svc
 
@@ -56,33 +56,38 @@ async def start(ctx: restate.ObjectContext, payload: dict | None = None) -> dict
     p = payload or {}
     rider_id = ctx.key()
     rate = float(p.get("rate", 0.1))
+    log_in("start", rider=rider_id, rate=rate)
 
     already = (await ctx.get("active", type_hint=bool)) or False
     ctx.set("rate", rate)
     ctx.set("active", True)
     if not already:
         ctx.set("trips_started", 0)
-        log("RiderSim", "start", rider=rider_id, rate=rate)
+        log("started", rider=rider_id, rate=rate)
+        log_out("send+delay(2s)", "RiderSim.tick", rider=rider_id)
         ctx.object_send(tick, key=rider_id, arg={}, send_delay=timedelta(seconds=2))
     else:
-        log("RiderSim", "config updated", rider=rider_id, rate=rate)
+        log("config updated", rider=rider_id, rate=rate)
     return {"rider_id": rider_id, "active": True, "rate": rate}
 
 
 @rider_sim.handler("pause")
 async def pause(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
+    log_in("pause", rider=ctx.key())
     ctx.set("active", False)
-    log("RiderSim", "paused", rider=ctx.key())
+    log("paused", rider=ctx.key())
     return {"rider_id": ctx.key(), "active": False}
 
 
 @rider_sim.handler("resume")
 async def resume(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     rider_id = ctx.key()
+    log_in("resume", rider=rider_id)
     was_active = (await ctx.get("active", type_hint=bool)) or False
     ctx.set("active", True)
     if not was_active:
-        log("RiderSim", "resumed", rider=rider_id)
+        log("resumed", rider=rider_id)
+        log_out("send+delay(1s)", "RiderSim.tick", rider=rider_id)
         ctx.object_send(tick, key=rider_id, arg={}, send_delay=timedelta(seconds=1))
     return {"rider_id": rider_id, "active": True}
 
@@ -90,16 +95,17 @@ async def resume(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 @rider_sim.handler("set_rate")
 async def set_rate(ctx: restate.ObjectContext, payload: dict) -> dict:
     rate = float(payload["rate"])
+    log_in("set_rate", rider=ctx.key(), rate=rate)
     ctx.set("rate", rate)
-    log("RiderSim", "set_rate", rider=ctx.key(), rate=rate)
     return {"rider_id": ctx.key(), "rate": rate}
 
 
 @rider_sim.handler("tick")
 async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     rider_id = ctx.key()
+    log_in("tick", rider=rider_id)
     if not ((await ctx.get("active", type_hint=bool)) or False):
-        log("RiderSim", "tick-stopped (paused)", rider=rider_id)
+        log("tick-stopped (paused)", rider=rider_id)
         return {"rider_id": rider_id, "action": "stopped"}
 
     rate = (await ctx.get("rate", type_hint=float)) or 0.1
@@ -111,13 +117,13 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     destination = await ctx.run_typed(f"dest_{trips_started}", _jitter, center=center, radius=0.06)
     trip_id = await ctx.run_typed(f"trip_id_{trips_started}", _new_trip_id)
 
-    log("RiderSim", "→ Trip.request_ride", flow="sync", rider=rider_id, trip=trip_id, region=region)
+    log_out("call", "Trip.request_ride", rider=rider_id, trip=trip_id, region=region)
     await ctx.object_call(
         trip_svc.request_ride,
         key=trip_id,
         arg={"rider_id": rider_id, "origin": origin, "destination": destination, "region": region},
     )
-    log("RiderSim", "→ Trip.confirm", flow="send", rider=rider_id, trip=trip_id)
+    log_out("send", "Trip.confirm", rider=rider_id, trip=trip_id)
     ctx.object_send(trip_svc.confirm, key=trip_id, arg={})
 
     ctx.set("trips_started", trips_started)
@@ -126,7 +132,7 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 
     delay_s = await ctx.run_typed(f"delay_{trips_started}", _next_delay, rate=rate)
     delay_s = max(0.5, min(delay_s, 120.0))  # sanity caps
-    log("RiderSim", f"→ self.tick in {delay_s:.1f}s", flow="self", rider=rider_id)
+    log_out(f"send+delay({delay_s:.1f}s)", "RiderSim.tick", rider=rider_id)
     ctx.object_send(tick, key=rider_id, arg={}, send_delay=timedelta(seconds=delay_s))
 
     return {"rider_id": rider_id, "trips_started": trips_started, "trip": trip_id}

@@ -35,7 +35,7 @@ isolation.
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in
 
 features = restate.VirtualObject("Features")
 
@@ -51,6 +51,7 @@ EVENT_WINDOW_MS = 60_000
 @features.handler("set")
 async def set_value(ctx: restate.ObjectContext, payload: dict) -> dict:
     value = payload.get("value")
+    log_in("set", key=ctx.key(), value=value)
 
     # The poison-pill branch. Real bug: somebody upstream emitted a sentinel
     # value this handler wasn't built to process. Raised as a plain Exception
@@ -63,7 +64,7 @@ async def set_value(ctx: restate.ObjectContext, payload: dict) -> dict:
     ctx.set("value", value)
     ctx.set("version", version + 1)
     ctx.set("last_updated_ms", await ctx.time())
-    log("Features", "set", key=ctx.key(), value=value, version=version + 1)
+    log("set", key=ctx.key(), value=value, version=version + 1)
     return {"key": ctx.key(), "value": value, "version": version + 1}
 
 
@@ -92,6 +93,7 @@ async def record_event(
     only useful for debugging. Exclusive per-key handlers mean each
     stream has a single-writer queue without us writing any locks.
     """
+    log_in("record_event", key=ctx.key())
     now_ms = await ctx.time()
     samples: list[int] = (await ctx.get("samples", type_hint=list)) or []
     cutoff = now_ms - EVENT_WINDOW_MS

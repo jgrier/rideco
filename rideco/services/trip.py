@@ -15,7 +15,7 @@ from datetime import timedelta
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.types import (
     DRIVER_IDLE,
     TRIP_ASSIGNED,
@@ -48,6 +48,7 @@ async def request_ride(ctx: restate.ObjectContext, payload: dict) -> dict:
     origin = payload["origin"]
     destination = payload["destination"]
     region = payload["region"]
+    log_in("request_ride", trip=trip_id, rider=rider_id, region=region)
 
     ctx.set("rider_id", rider_id)
     ctx.set("origin", origin)
@@ -55,7 +56,7 @@ async def request_ride(ctx: restate.ObjectContext, payload: dict) -> dict:
     ctx.set("region", region)
     ctx.set("status", TRIP_REQUESTED)
 
-    log("Trip", "→ Offers.generate", flow="sync", trip=trip_id, region=region)
+    log_out("call", "Offers.generate", trip=trip_id, region=region)
     bundle = await ctx.service_call(
         offers_svc.generate,
         arg={"trip_id": trip_id, "origin": origin, "destination": destination, "region": region},
@@ -65,20 +66,21 @@ async def request_ride(ctx: restate.ObjectContext, payload: dict) -> dict:
     ctx.set("multiplier", bundle["multiplier"])
     ctx.set("status", TRIP_QUOTED)
 
-    log("Trip", "→ Pricing.note_demand", flow="send", region=region)
+    log_out("send", "Pricing.note_demand", region=region)
     ctx.object_send(pricing_svc.note_demand, key=region, arg={})
 
     # Emit the request as an event into Features' rolling window.
     # Pricing.refresh reads this stream's rate every 10s to fold
     # real-time demand intensity into the surge multiplier.
-    log("Trip", "→ Features.record_event(ride_request)", flow="send", region=region)
+    log_out("send", "Features.record_event",
+            key=f"events:region:{region}:ride_request")
     ctx.object_send(
         features_svc.record_event,
         key=f"events:region:{region}:ride_request",
         arg={},
     )
 
-    log("Trip", "quoted", trip=trip_id, region=region,
+    log("quoted", trip=trip_id, region=region,
         eta=selected["eta_seconds"], price=selected["price_cents"],
         car_class=selected["car_class"], mult=bundle["multiplier"])
     return {
@@ -104,6 +106,7 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
       4. Record assignment, fan out to Locations.
     """
     trip_id = ctx.key()
+    log_in("confirm", trip=trip_id)
     region = await ctx.get("region", type_hint=str)
     origin = await ctx.get("origin", type_hint=dict)
     if not region or not origin:
@@ -116,15 +119,15 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     awakeable_name, driver_future = ctx.awakeable(type_hint=dict)
     ctx.set("pending_match_awakeable", awakeable_name)
 
-    log("Trip", "→ Dispatch.enqueue_trip (one-way)", flow="send",
-        region=region, trip=trip_id, awakeable=awakeable_name)
+    log_out("send", "Dispatch.enqueue_trip",
+            region=region, trip=trip_id, awakeable=awakeable_name)
     ctx.object_send(
         dispatch_svc.enqueue_trip,
         key=region,
         arg={"trip_id": trip_id, "origin": origin, "awakeable": awakeable_name},
     )
 
-    log("Trip", "awaiting match (suspended)", trip=trip_id)
+    log("awaiting match (suspended)", trip=trip_id, awakeable=awakeable_name)
     match = await driver_future  # SUSPENDS — same invocation resumes when Dispatch resolves
     driver_id = match["driver_id"]
     epoch_id = match.get("epoch_id")
@@ -134,7 +137,7 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     ctx.set("status", TRIP_ASSIGNED)
     ctx.clear("pending_match_awakeable")
 
-    log("Trip", "→ Locations.accept_trip", flow="send", trip=trip_id, driver=driver_id)
+    log_out("send", "Locations.accept_trip", trip=trip_id, driver=driver_id)
     ctx.object_send(
         locations_svc.accept_trip,
         key=driver_id,
@@ -144,16 +147,18 @@ async def confirm(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     # Schedule auto-completion so the driver returns to the pool. Real
     # systems would mark complete from the driver's app on dropoff; for the
     # demo, a delayed self-send to `complete` simulates ride duration.
-    log("Trip", f"→ self.complete in {int(RIDE_DURATION.total_seconds())}s", flow="self", trip=trip_id)
+    delay_s = int(RIDE_DURATION.total_seconds())
+    log_out(f"send+delay({delay_s}s)", "Trip.complete", trip=trip_id)
     ctx.object_send(complete, key=trip_id, arg={}, send_delay=RIDE_DURATION)
 
-    log("Trip", "assigned", trip=trip_id, driver=driver_id, epoch=epoch_id)
+    log("assigned", trip=trip_id, driver=driver_id, epoch=epoch_id)
     return {"trip_id": trip_id, "status": TRIP_ASSIGNED, "driver_id": driver_id, "epoch_id": epoch_id}
 
 
 @trip.handler("complete")
 async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     trip_id = ctx.key()
+    log_in("complete", trip=trip_id)
     status = await ctx.get("status", type_hint=str)
     if status == TRIP_COMPLETED or status == TRIP_CANCELLED:
         return {"trip_id": trip_id, "status": status}
@@ -164,8 +169,8 @@ async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 
     # Flip the driver back to idle so they can be matched again.
     if driver_id and region:
-        log("Trip", "→ Locations.set_status(idle)", flow="send",
-            trip=trip_id, driver=driver_id)
+        log_out("send", "Locations.set_status",
+                trip=trip_id, driver=driver_id, status=DRIVER_IDLE)
         ctx.object_send(
             locations_svc.set_status,
             key=driver_id,
@@ -174,17 +179,19 @@ async def complete(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 
     # Bump the region's completion counter so the dashboard can show it.
     if region:
+        log_out("send", "Dispatch.note_completion", region=region)
         ctx.object_send(dispatch_svc.note_completion, key=region, arg={})
 
-    log("Trip", "completed", trip=trip_id, driver=driver_id)
+    log("completed", trip=trip_id, driver=driver_id)
     return {"trip_id": trip_id, "status": TRIP_COMPLETED}
 
 
 @trip.handler("cancel")
 async def cancel(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     trip_id = ctx.key()
+    log_in("cancel", trip=trip_id)
     ctx.set("status", TRIP_CANCELLED)
-    log("Trip", "cancelled", trip=trip_id)
+    log("cancelled", trip=trip_id)
     return {"trip_id": trip_id, "status": TRIP_CANCELLED}
 
 

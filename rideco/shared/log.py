@@ -1,46 +1,50 @@
-"""Color-coded structured logging.
+"""Per-service activity logging.
 
-The `flow` keyword arg prepends a flow tag so each line shows which
-interaction kind it is: synchronous RPC vs durable async send (Restate log)
-vs delayed self-send (same primitive, just to self with a delay). Used at
-the *call site* of every inter-service interaction — the sender annotates
-the flow, the receiver just logs what it did.
+Each service writes to its own stdout (segregated per-service in the
+TUI), so log lines don't need to repeat which service they're from.
+Three helpers, one shape per direction of activity:
 
-  flow="sync"   →  [sync→]    sync RPC (caller awaits)
-  flow="send"   →  [send→]    durable async send via the Restate log (one-way)
-  flow="self"   →  [self→]    delayed self-send (cadence loop — still the
-                              Restate log, just to self with a delay)
-  flow=None     →  no tag     receiver-side activity log
+  log_in(handler, **kv)        — incoming handler invocation
+  log_out(kind, target, **kv)  — outgoing interaction
+  log(msg, **kv)               — body messages: decisions, transitions
+
+`kind` on log_out is a free string surfacing the call shape inline so
+readers can see at a glance whether we blocked the caller or fired
+durably onto the Restate log. Convention used across the services:
+
+  "call"             — ctx.object_call / ctx.service_call (sync; caller awaits)
+  "send"             — ctx.object_send / ctx.service_send (async; durable on the log)
+  "send+delay(Ns)"   — ctx.object_send(..., send_delay=N) (delayed self/other send)
+  "resolve"          — ctx.resolve_awakeable (resumes a suspended invocation)
+
+Shared/polled read handlers (Features.get, *.get, Features.event_rate)
+deliberately do not call log_in — they're hit every poll by the TUI
+and on every Pricing refresh, so logging entry on those would drown
+out everything else.
 """
 
 from rich.console import Console
 
 _console = Console()
 
-_SERVICE_COLORS = {
-    "Trip":        "bright_cyan",
-    "Dispatch":    "bright_magenta",
-    "Locations":   "bright_yellow",
-    "Pricing":     "bright_green",
-    "ETA":         "bright_blue",
-    "Features":    "bright_white",
-    "Offers":      "cyan",
-    "SafetyAgent": "bright_red",
-    "rider-sim":   "cyan",
-    "driver-sim":  "yellow",
-    "mapping":     "white",
-}
 
-_FLOW_TAGS = {
-    "sync": "[bold green][sync→][/bold green]   ",
-    "send": "[bold blue][send→][/bold blue]   ",
-    "self": "[bold blue][self→][/bold blue]   ",
-}
-
-
-def log(service: str, msg: str, *, flow: str | None = None, **kv) -> None:
-    color = _SERVICE_COLORS.get(service, "white")
-    tag = f"[{color}]{service:<11}[/{color}]"
-    flow_tag = _FLOW_TAGS.get(flow, "             ")
+def log_in(handler: str, **kv) -> None:
+    """Log the entry of an incoming handler invocation."""
     suffix = " ".join(f"[dim]{k}=[/dim]{v}" for k, v in kv.items())
-    _console.print(f"{flow_tag}{tag} {msg} {suffix}".rstrip())
+    _console.print(f"[bold cyan]← {handler}[/bold cyan]  {suffix}".rstrip())
+
+
+def log_out(kind: str, target: str, **kv) -> None:
+    """Log an outgoing interaction. `kind` ∈ {call, send, send+delay(Ns),
+    resolve}; color follows sync (yellow) vs async (blue)."""
+    color = "yellow" if kind == "call" else "blue"
+    suffix = " ".join(f"[dim]{k}=[/dim]{v}" for k, v in kv.items())
+    _console.print(
+        f"[bold {color}]→ {kind} {target}[/bold {color}]  {suffix}".rstrip(),
+    )
+
+
+def log(msg: str, **kv) -> None:
+    """Free-form body message: a decision, state transition, completion."""
+    suffix = " ".join(f"[dim]{k}=[/dim]{v}" for k, v in kv.items())
+    _console.print(f"{msg}  {suffix}".rstrip())

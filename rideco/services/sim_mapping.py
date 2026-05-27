@@ -15,7 +15,7 @@ import random
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.types import ENTITY_REGION, feature_key
 from rideco.services import features as features_svc
 from rideco.services import pricing as pricing_svc
@@ -41,39 +41,44 @@ def _pick_accidents() -> float:
 async def start(ctx: restate.ObjectContext, payload: dict) -> dict:
     region = ctx.key()
     interval_s = float(payload.get("interval_s", 12.0))
+    log_in("start", region=region, interval_s=interval_s)
     already = (await ctx.get("active", type_hint=bool)) or False
     ctx.set("interval_s", interval_s)
     ctx.set("active", True)
     if not already:
         ctx.set("emits", 0)
-        log("MappingSim", "→ Pricing.refresh (bootstrap)", flow="send", region=region)
+        log_out("send", "Pricing.refresh", region=region, note="bootstrap")
         ctx.object_send(pricing_svc.refresh, key=region, arg={})
-        log("MappingSim", "→ RegionSafetyAgent.start_monitoring (bootstrap)",
-            flow="send", region=region)
+        log_out("send", "RegionSafetyAgent.start_monitoring",
+                region=region, note="bootstrap")
         ctx.object_send(rsa_svc.start_monitoring, key=region, arg={})
+        log_out(f"send+delay({interval_s:.1f}s)", "MappingSim.tick", region=region)
         ctx.object_send(tick, key=region, arg={},
                         send_delay=timedelta(seconds=interval_s))
-        log("MappingSim", "started", region=region, interval_s=interval_s)
+        log("started", region=region, interval_s=interval_s)
     else:
-        log("MappingSim", "config updated", region=region, interval_s=interval_s)
+        log("config updated", region=region, interval_s=interval_s)
     return {"region": region, "active": True, "interval_s": interval_s}
 
 
 @mapping_sim.handler("pause")
 async def pause(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
+    log_in("pause", region=ctx.key())
     ctx.set("active", False)
-    log("MappingSim", "paused", region=ctx.key())
+    log("paused", region=ctx.key())
     return {"region": ctx.key(), "active": False}
 
 
 @mapping_sim.handler("resume")
 async def resume(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     region = ctx.key()
+    log_in("resume", region=region)
     was_active = (await ctx.get("active", type_hint=bool)) or False
     ctx.set("active", True)
     if not was_active:
         interval_s = (await ctx.get("interval_s", type_hint=float)) or 12.0
-        log("MappingSim", "resumed", region=region)
+        log("resumed", region=region)
+        log_out(f"send+delay({interval_s:.1f}s)", "MappingSim.tick", region=region)
         ctx.object_send(tick, key=region, arg={},
                         send_delay=timedelta(seconds=interval_s))
     return {"region": region, "active": True}
@@ -82,16 +87,17 @@ async def resume(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
 @mapping_sim.handler("set_interval")
 async def set_interval(ctx: restate.ObjectContext, payload: dict) -> dict:
     interval_s = float(payload["interval_s"])
+    log_in("set_interval", region=ctx.key(), interval_s=interval_s)
     ctx.set("interval_s", interval_s)
-    log("MappingSim", "set_interval", region=ctx.key(), interval_s=interval_s)
     return {"region": ctx.key(), "interval_s": interval_s}
 
 
 @mapping_sim.handler("tick")
 async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     region = ctx.key()
+    log_in("tick", region=region)
     if not ((await ctx.get("active", type_hint=bool)) or False):
-        log("MappingSim", "tick-stopped (paused)", region=region)
+        log("tick-stopped (paused)", region=region)
         return {"region": region, "action": "stopped"}
 
     emits = ((await ctx.get("emits", type_hint=int)) or 0) + 1
@@ -99,13 +105,15 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     weather = await ctx.run_typed(f"weather_{emits}", _pick_weather)
     accidents = await ctx.run_typed(f"accidents_{emits}", _pick_accidents)
 
-    log("MappingSim", "→ Features.set", flow="send",
-        region=region, weather=weather, accidents=accidents)
+    log_out("send", "Features.set",
+            key=feature_key(ENTITY_REGION, region, "weather"), value=weather)
     ctx.object_send(
         features_svc.set_value,
         key=feature_key(ENTITY_REGION, region, "weather"),
         arg={"value": weather},
     )
+    log_out("send", "Features.set",
+            key=feature_key(ENTITY_REGION, region, "accident_density"), value=accidents)
     ctx.object_send(
         features_svc.set_value,
         key=feature_key(ENTITY_REGION, region, "accident_density"),
@@ -117,6 +125,7 @@ async def tick(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     ctx.set("last_accidents", accidents)
 
     interval_s = (await ctx.get("interval_s", type_hint=float)) or 12.0
+    log_out(f"send+delay({interval_s:.1f}s)", "MappingSim.tick", region=region)
     ctx.object_send(tick, key=region, arg={},
                     send_delay=timedelta(seconds=interval_s))
     return {"region": region, "emits": emits, "weather": weather, "accidents": accidents}

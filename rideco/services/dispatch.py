@@ -20,7 +20,7 @@ from datetime import timedelta
 
 import restate
 
-from rideco.shared.log import log
+from rideco.shared.log import log, log_in, log_out
 from rideco.shared.types import (
     DRIVER_IDLE,
     feature_key,
@@ -58,6 +58,7 @@ async def get(ctx: restate.ObjectSharedContext, _: dict | None = None) -> dict:
 @dispatch.handler("note_completion")
 async def note_completion(ctx: restate.ObjectContext, _: dict | None = None) -> dict:
     """Trip.complete fires this to bump the per-region completion counter."""
+    log_in("note_completion", region=ctx.key())
     n = ((await ctx.get("total_completed", type_hint=int)) or 0) + 1
     ctx.set("total_completed", n)
     return {"region": ctx.key(), "total_completed": n}
@@ -68,32 +69,35 @@ async def set_active(ctx: restate.ObjectContext, payload: dict) -> dict:
     """Turn matching on or off for this region. Called by RegionSafetyAgent."""
     region = ctx.key()
     active = bool(payload.get("active", True))
+    log_in("set_active", region=region, active=active)
     prev = (await ctx.get("active", type_hint=bool))
     if prev is None:
         prev = True
     ctx.set("active", active)
-    log("Dispatch", f"set_active={active} (was {prev})", region=region)
+    log(f"active={active}", region=region, was=prev)
     return {"region": region, "active": active}
 
 
 @dispatch.handler("register_driver")
 async def register_driver(ctx: restate.ObjectContext, payload: dict) -> dict:
     driver_id = payload["driver_id"]
+    log_in("register_driver", region=ctx.key(), driver=driver_id)
     drivers = (await ctx.get("active_driver_ids", type_hint=list)) or []
     if driver_id not in drivers:
         drivers.append(driver_id)
         ctx.set("active_driver_ids", drivers)
-    log("Dispatch", "driver+", region=ctx.key(), driver=driver_id, pool=len(drivers))
+    log("driver+", region=ctx.key(), driver=driver_id, pool=len(drivers))
     return {"region": ctx.key(), "pool_size": len(drivers)}
 
 
 @dispatch.handler("deregister_driver")
 async def deregister_driver(ctx: restate.ObjectContext, payload: dict) -> dict:
     driver_id = payload["driver_id"]
+    log_in("deregister_driver", region=ctx.key(), driver=driver_id)
     drivers = (await ctx.get("active_driver_ids", type_hint=list)) or []
     drivers = [d for d in drivers if d != driver_id]
     ctx.set("active_driver_ids", drivers)
-    log("Dispatch", "driver-", region=ctx.key(), driver=driver_id, pool=len(drivers))
+    log("driver-", region=ctx.key(), driver=driver_id, pool=len(drivers))
     return {"region": ctx.key(), "pool_size": len(drivers)}
 
 
@@ -105,6 +109,7 @@ async def enqueue_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
     origin = payload["origin"]
     awakeable = payload["awakeable"]
     region = ctx.key()
+    log_in("enqueue_trip", region=region, trip=trip_id)
 
     pending = (await ctx.get("pending_trips", type_hint=list)) or []
     pending.append({"trip_id": trip_id, "origin": origin, "awakeable": awakeable})
@@ -114,10 +119,10 @@ async def enqueue_trip(ctx: restate.ObjectContext, payload: dict) -> dict:
     if not already_running:
         ctx.set("loop_running", True)
         ctx.set("epoch_id", 1)
-        log("Dispatch", "→ close_epoch in 5s (loop start)", flow="self", region=region)
+        log_out("send+delay(5s)", "Dispatch.close_epoch", region=region, note="loop start")
         ctx.object_send(close_epoch, key=region, arg={}, send_delay=EPOCH_INTERVAL)
 
-    log("Dispatch", "enqueue", region=region, trip=trip_id, pending=len(pending))
+    log("enqueued", region=region, trip=trip_id, pending=len(pending))
     return {"region": region, "pending": len(pending)}
 
 
@@ -135,6 +140,7 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
     the backlog drains.
     """
     region = ctx.key()
+    log_in("close_epoch", region=region)
     epoch_id = (await ctx.get("epoch_id", type_hint=int)) or 1
     pending = (await ctx.get("pending_trips", type_hint=list)) or []
     drivers = list((await ctx.get("active_driver_ids", type_hint=list)) or [])
@@ -145,23 +151,24 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
     # If region is halted, skip matching but keep the cadence loop running so
     # we resume immediately on un-halt.
     if not active:
-        log("Dispatch", "close-epoch (HALTED, no matching)", region=region,
+        log("close-epoch (HALTED, no matching)", region=region,
             epoch=epoch_id, pending=len(pending), drivers=len(drivers))
         ctx.set("epoch_id", epoch_id + 1)
-        log("Dispatch", "→ close_epoch in 5s", flow="self", region=region)
+        log_out("send+delay(5s)", "Dispatch.close_epoch", region=region)
         ctx.object_send(close_epoch, key=region, arg={}, send_delay=EPOCH_INTERVAL)
         return {"region": region, "epoch_id": epoch_id, "halted": True,
                 "matched": 0, "pending": len(pending)}
 
     # Optional read: accident_density nudges the demo logging.
+    accident_key = feature_key(ENTITY_REGION, region, "accident_density")
+    log_out("call", "Features.get", key=accident_key)
     accident_res = await ctx.object_call(
-        features_svc.get,
-        key=feature_key(ENTITY_REGION, region, "accident_density"),
-        arg={"default": 0.0},
+        features_svc.get, key=accident_key, arg={"default": 0.0},
     )
 
     driver_positions: list[tuple[str, dict]] = []
     for driver_id in drivers:
+        log_out("call", "Locations.get_position", driver=driver_id)
         pos = await ctx.object_call(locations_svc.get_position, key=driver_id, arg={})
         if pos.get("lat") is not None and pos.get("status") == DRIVER_IDLE:
             driver_positions.append((driver_id, pos))
@@ -187,13 +194,14 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
         else:
             leftover.append(trip)
 
-    log("Dispatch", "close-epoch", region=region, epoch=epoch_id,
+    log("close-epoch", region=region, epoch=epoch_id,
         pending=len(pending), drivers=len(driver_positions),
         matched=len(assignments), carried_over=len(leftover),
         accident_density=accident_res.get("value"))
 
     for a in assignments:
-        log("Dispatch", "resolve_awakeable", trip=a["trip_id"], driver=a["driver_id"])
+        log_out("resolve", "awakeable", trip=a["trip_id"], driver=a["driver_id"],
+                awakeable=a["awakeable"])
         ctx.resolve_awakeable(a["awakeable"], {
             "driver_id": a["driver_id"],
             "epoch_id": epoch_id,
@@ -207,11 +215,11 @@ async def close_epoch(ctx: restate.ObjectContext, _: dict | None = None) -> dict
     ctx.set("epoch_id", epoch_id + 1)
     has_more_work = bool(leftover) or bool(driver_positions)
     if has_more_work:
-        log("Dispatch", "→ close_epoch in 5s", flow="self", region=region)
+        log_out("send+delay(5s)", "Dispatch.close_epoch", region=region)
         ctx.object_send(close_epoch, key=region, arg={}, send_delay=EPOCH_INTERVAL)
     else:
         ctx.set("loop_running", False)
-        log("Dispatch", "loop-idle", region=region)
+        log("loop-idle", region=region)
 
     return {
         "region": region,
