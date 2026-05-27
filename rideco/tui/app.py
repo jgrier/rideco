@@ -268,53 +268,23 @@ class ServicesTable(DataTable):
         )
 
 
-HELP_TEXT = """[bold]RideCo TUI[/bold]
+HELP_TEXT = """[bold]RideCo TUI[/bold]   [dim]· owns restate + 12 services + sims · tables live (1s poll)[/dim]
 
-[bold cyan]Navigation[/bold cyan]
-  [yellow]Tab[/yellow]    move focus between the Regions and Services tables
-         (the row cursor follows whichever table has focus)
-  [yellow]↑/↓[/yellow]   select rows in the focused table
+[bold cyan]Navigate[/bold cyan]   [yellow]Tab[/yellow] · [yellow]↑↓[/yellow]      [bold cyan]System[/bold cyan]   [yellow]q[/yellow] quit · [yellow]?[/yellow] help · [yellow]r[/yellow] refresh · [yellow]ctrl+r[/yellow] [red]reset[/red]
 
-[bold cyan]Quit / help / refresh[/bold cyan]
-  [yellow]q[/yellow]        quit (tears everything down)
-  [yellow]?[/yellow]        show this help
-  [yellow]r[/yellow]        refresh now
-  [yellow]ctrl+r[/yellow]   [red]reset[/red] — wipe ALL Restate state and reboot the stack
+[bold cyan]Regions[/bold cyan]   [yellow]s[/yellow] spike · [yellow]a[/yellow] approve · [yellow]m[/yellow] make-trip · [yellow]c[/yellow] cancel last · [yellow]p[/yellow] poison feature
+   [dim]bottom-left = live region detail[/dim]
 
-[bold cyan]On the Regions table  ([italic]bottom pane shows live region detail[/italic])[/bold cyan]
-  [yellow]s[/yellow]    spike the selected region (25s of unsafe features
-        — the RegionSafetyAgent will halt it)
-  [yellow]a[/yellow]    approve the selected region's pending awakeable
-        (resumes dispatch)
-  [yellow]m[/yellow]    make an ad-hoc trip in the selected region
-        (id stored for the next 'c' cancel)
-  [yellow]c[/yellow]    cancel the last trip made via 'm'
-  [yellow]p[/yellow]    poison-pill the selected region's weather key
-        (stuck Features.set, queues per-key, others unaffected)
+[bold cyan]Services[/bold cyan]  [yellow]k[/yellow] kill · [yellow]b[/yellow] boot
+   [dim]bottom-left = log tail · bottom-right = service narrative[/dim]
 
-[bold cyan]On the Services table  ([italic]bottom pane tails the selected service's log[/italic])[/bold cyan]
-  [yellow]k[/yellow]    kill the selected service process
-  [yellow]b[/yellow]    boot the selected service (re-registers with Restate)
+[bold cyan]Sims[/bold cyan]      [yellow]\\[[/yellow] / [yellow]\\][/yellow] rider rate ± · [yellow]shift+p[/yellow] pause/resume
 
-[bold cyan]Sims  ([italic]single-line panel above the bottom pane[/italic])[/bold cyan]
-  [yellow]\\[[/yellow] / [yellow]\\][/yellow]   nudge the per-rider trip rate down / up (step 0.05/s,
-            clamped to [0.02, 2.00])
-  [yellow]shift+p[/yellow]   pause / resume riders + drivers + mapping
+[bold cyan]Trips[/bold cyan]     [yellow]t[/yellow] trip-detail modal (defaults to the latest observed trip)
 
-[bold cyan]Trip inspection[/bold cyan]
-  [yellow]t[/yellow]    open the trip-detail modal (pre-filled with the last
-        trip made via 'm'; type any trip id + Enter to retarget)
+[bold cyan]Demo[/bold cyan]      [yellow]d[/yellow] toggle 8-step walkthrough · [yellow]n[/yellow] / [yellow]N[/yellow] next / prev · [yellow]o[/yellow] open Restate UI
 
-[bold cyan]Demo walkthrough[/bold cyan]
-  [yellow]d[/yellow]    toggle demo mode — guided 8-step walkthrough of the
-        whole halt/approve/drain narrative + Restate UI callouts
-  [yellow]n[/yellow] / [yellow]N[/yellow]   next / previous demo step (while demo is on)
-  [yellow]o[/yellow]    open Restate UI in the browser (jumps to the page
-        the current demo step references, or root otherwise)
-
-[bold cyan]What's running[/bold cyan]
-  The TUI owns restate-server, the twelve service hypercorns, and
-  the sim fleet. Tables above are live (1s poll).
+[bold cyan]Misc[/bold cyan]      [yellow]S[/yellow] save SVG screenshot → tui.svg
 """
 
 
@@ -997,6 +967,7 @@ class RidecoApp(App):
         Binding("n", "demo_next", "Next step", show=False),
         Binding("N", "demo_prev", "Prev step", show=False),
         Binding("o", "open_restate", "Open Restate UI"),
+        Binding("S", "screenshot", "Screenshot", show=False),
     ]
 
     def __init__(self, auto_boot: bool = True) -> None:
@@ -1544,6 +1515,16 @@ class RidecoApp(App):
             self.query_one(RightPane).show_demo(self._demo_step, step)
         except Exception:
             pass
+
+    def action_screenshot(self) -> None:
+        """Save an SVG screenshot of the current TUI state to tui.svg
+        in the repo root. Useful for the README image."""
+        path = str(REPO_DIR / "tui.svg")
+        try:
+            self.save_screenshot(path)
+            self.notify(f"saved screenshot → {path}")
+        except Exception as e:
+            self.notify(f"screenshot failed: {e}", severity="error")
 
     def action_open_restate(self) -> None:
         """Open the Restate UI in the user's browser. If demo mode is

@@ -1,12 +1,12 @@
 # RideCo on Restate
 
 RideCo is a working ride-hailing backend built on
-[Restate](https://restate.dev). Twelve services run as stateless Python
-workers — eight app services (Trip, Offers, ETA, Pricing, Locations,
-Features, Dispatch, RegionSafetyAgent) and four sim services that play
-the role of external clients (RiderSim, DriverSim, MappingSim, plus a
-SimControl fan-out service). All state, durability, retries, ordering,
-and scheduling live inside Restate.
+[Restate](https://restate.dev). Twelve stateless services — eight app
+services (Trip, Offers, ETA, Pricing, Locations, Features, Dispatch,
+RegionSafetyAgent) and four sim services that play the role of external
+clients (RiderSim, DriverSim, MappingSim, plus a SimControl fan-out
+service). All state, durability, retries, ordering, and scheduling
+live inside Restate.
 
 The repo is a reproducible demo. One terminal, a single TUI command, no
 Kafka, no Redis, no separate workflow engine, no agent framework. Just
@@ -20,9 +20,19 @@ Restate plus stateless application code.
 
 External clients (rider, driver, mapping providers, human operator) talk to
 Restate's HTTP ingress. Restate journals the call and invokes the appropriate
-worker. **Workers never call each other directly.** When a worker uses
+service. **Services never call each other directly.** When a service uses
 `ctx.call()` or `ctx.send()` from inside a handler, the call goes back
 through Restate, which routes it onward. Restate is always the hub.
+
+This only works because Restate built its own distributed log
+specifically so durability can sit in the synchronous call path of every
+service-to-service hop. A normal log — Kafka, NATS JetStream, etc. —
+adds milliseconds you can't afford on each call; you'd never put one in
+the middle of a request/response chain. Restate's log is purpose-built
+and tuned for sub-millisecond latency on every write, which is what
+makes this architecture viable: Restate is in the middle of every
+interaction without being a bottleneck. Think of it as a service mesh
+where the connecting tissue is durable — a **Durable Mesh**.
 
 **`call()` vs `send()`.** Every handler supports both — the choice is at
 the call site. `call()` is synchronous: the caller awaits the response.
@@ -32,15 +42,21 @@ the moment Restate acks. A trip request that uses `call()` blocks waiting
 for the result; a GPS ping that uses `send()` returns the moment Restate
 has the message.
 
-## All workers are stateless
+## All services are stateless
 
 Each of the twelve services is an ordinary Python process behind hypercorn —
 no local state, no RocksDB, no Redis sessions, no consumer-group offsets to
-maintain. The workers can be killed and restarted at will, scaled
+maintain. Services can be killed and restarted at will, scaled
 horizontally without coordination, run anywhere a regular HTTP service can
 run. **Every operational concern that usually sticks to "stateful services"
 lives in Restate.** That's a substantial simplification: deploy stateless
-workers behind a load balancer, run a Restate cluster, done.
+services behind a load balancer, run a Restate cluster, done.
+
+Because services are stateless and durability lives in Restate, they
+can run on FaaS platforms — AWS Lambda, Google Cloud Run, Cloudflare
+Workers, anywhere a function can serve HTTP. Cold-start a handler,
+serve one invocation, scale to zero. The Restate log is the only thing
+that has to be up; the services come and go.
 
 ## Virtual Objects
 
@@ -87,238 +103,6 @@ sync `get` reads (serving, read side). Locations and Features are both —
 they receive fire-and-forget writes from external publishers and respond to
 sync reads from internal consumers. Serving reads aren't drawn as request
 arrows in the architecture diagram; they're implicit.
-
-## Per-service breakdown
-
-How each service is shaped, what it owns, what it calls. Every row in
-every "Calls" cell goes through Restate — `call()` is sync (caller
-awaits), `send()` is async fire-and-forget into the Restate log,
-self-`send()` with a delay replaces external schedulers.
-
-### Trip — Stateful microservice
-
-The only orchestrator. `confirm` is a long-running operation: creates an
-awakeable, sends one-way to `Dispatch.enqueue_trip` carrying the awakeable
-name, and **suspends** on the awakeable. When Dispatch's next matching
-round resolves the awakeable with a `driver_id`, the same `confirm`
-invocation resumes, records the assignment, and fans out to Locations.
-After assignment, schedules a delayed self-send to `complete` that flips
-the driver back to idle when the simulated ride ends. Trip → Dispatch is
-a one-way dependency; Dispatch never imports Trip.
-
-| | |
-|---|---|
-| **Domain** | Stateful microservices + Durable execution |
-| **Shape** | Virtual Object keyed by `trip_id` |
-| **Receives** | `call()`: `request_ride`, `confirm`, `cancel`, `complete` &nbsp;·&nbsp; shared read: `get` |
-| **State** | `rider_id`, `origin`, `destination`, `region`, `status`, `offer`, `multiplier`, `assigned_driver_id`, `epoch_id`, `pending_match_awakeable` |
-| **Calls** | `call()` → `Offers.generate` &nbsp;·&nbsp; `send()` → `Pricing.note_demand`, `Features.record_event` (one event per request into the rolling-window aggregate), `Dispatch.enqueue_trip` (with awakeable token), `Locations.accept_trip` &nbsp;·&nbsp; self-`send()` → `complete` (delayed) |
-
-### Offers — Stateful microservice
-
-Pure synthesis layer. Fans into ETA + Pricing in sequence, builds three
-candidate offers per car class (Standard, XL, Lux), selects Standard.
-
-| | |
-|---|---|
-| **Domain** | Stateful microservices |
-| **Shape** | Plain service (no per-key state) |
-| **Receives** | `call()` from Trip: `generate` |
-| **State** | — |
-| **Calls** | `call()` → `ETA.estimate`, `Pricing.quote` |
-
-### ETA — Stateful microservice
-
-Arrival-time predictor. Computes haversine distance, adjusts by region
-features, returns ETA + reliability score.
-
-| | |
-|---|---|
-| **Domain** | Stateful microservices |
-| **Shape** | Plain service (no per-key state) |
-| **Receives** | `call()` from Offers: `estimate` |
-| **State** | — |
-| **Calls** | `call()` → `Features.get` (region `weather`, `accident_density`) |
-
-### Pricing — Stateful microservice
-
-Per-region surge multiplier. The refresh loop is a delayed call to self
-— no external scheduler. Multiplier reflects weather + accidents + a
-**rolling 60s ride-request rate** read from the Features aggregate
-(below). The cumulative `demand_count` only grows; the windowed rate
-decays naturally, so surge responds to *recent* demand intensity.
-
-| | |
-|---|---|
-| **Domain** | Stateful microservices + Durable execution |
-| **Shape** | Virtual Object keyed by `region` |
-| **Receives** | `call()` from Offers: `quote` &nbsp;·&nbsp; `send()`: `note_demand` (Trip), `note_supply` (DriverSim) &nbsp;·&nbsp; self-scheduled: `refresh` |
-| **State** | `multiplier`, `supply_count`, `demand_count`, `last_refresh_ms` |
-| **Calls** | `call()` → `Features.get` (weather, accidents), `Features.event_rate` (windowed request rate) &nbsp;·&nbsp; self-`send()` → `refresh` in 10s |
-
-### Locations — Event-driven app + Serving
-
-Per-driver position + status. Pings are fire-and-forget; the smoothing
-(mocked here as an exponential moving average; production systems would
-use a Marginalized Particle Filter) happens inside the handler. Position
-reads via the shared `get_position` handler are the serving path.
-
-| | |
-|---|---|
-| **Domain** | Event-driven apps + Serving |
-| **Shape** | Virtual Object keyed by `driver_id` |
-| **Receives** | `send()`: `ping` (driver app), `accept_trip` (Trip) &nbsp;·&nbsp; `call()`: `set_status` &nbsp;·&nbsp; shared read: `get_position` |
-| **State** | `status`, `matched_lat`, `matched_lng`, `last_ping_ms`, `region`, `current_trip_id` |
-| **Calls** | `send()` → `Dispatch.register_driver` / `deregister_driver` on status transitions |
-
-### Features — Event-driven app + Serving + stream-processed aggregates
-
-Online feature store with **two shapes on the same Virtual Object**:
-
-- **Point-value features** (`set` / `get`) — last-write-wins. Used for
-  `region:SF:weather`, `region:SF:accident_density`. External providers
-  (Mapping in production, MappingSim here) `send()` writes; readers
-  (ETA, Pricing, RegionSafetyAgent) `call()` `get`.
-- **Aggregates over event streams** (`record_event` / `event_rate`) —
-  rolling 60s window per key. Trip.request_ride fire-and-forget sends
-  one event per ride request to `events:region:SF:ride_request`. The
-  handler appends `now` to a per-key timestamp list and trims out
-  samples older than the window. Pricing.refresh `call()`s the shared
-  `event_rate` handler every 10s to read events/sec over the window
-  and fold it into the surge multiplier.
-
-The canonical "events in → windowed aggregate out → consumer service
-decision" stream-processing pattern, hosted on the same VO that serves
-the point-value features. Per-key state slots are independent (`value`
-vs `samples`), and per-key exclusive handlers give each event stream a
-single-writer queue without any explicit locking. Shared `event_rate`
-readers don't block writers.
-
-Per-key serialization also means a stuck handler on one key (the
-poison-pill demo) blocks only that key while every other Features VO
-keeps working — fault isolation at the key level.
-
-| | |
-|---|---|
-| **Domain** | Event-driven apps + Serving + stream-processed aggregates |
-| **Shape** | Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}` or `events:{...}` |
-| **Receives** | `send()`: `set` (point value), `record_event` (stream sample) &nbsp;·&nbsp; shared reads: `get`, `event_rate` |
-| **State** | per-key: either `{value, version, last_updated_ms}` OR `{samples}` (list of ms timestamps in the rolling window) |
-| **Calls** | — |
-
-### Dispatch — Durable execution
-
-Long-running matcher. Each epoch: snapshot pending trips + driver
-positions, greedy nearest-driver match, resolve each matched trip's
-awakeable token with its `driver_id`. Unmatched trips carry forward.
-Dispatch has no knowledge of Trip's state machine — it just resolves
-tokens it was handed. When RegionSafetyAgent halts the region, the
-epoch loop keeps ticking but matching is skipped; trips queue and drain
-on resume.
-
-| | |
-|---|---|
-| **Domain** | Durable execution |
-| **Shape** | Virtual Object keyed by `region` |
-| **Receives** | `send()`: `enqueue_trip` (Trip, with awakeable token), `register_driver` / `deregister_driver` (Locations), `set_active` (RegionSafetyAgent) &nbsp;·&nbsp; self-scheduled: `close_epoch` every 5s |
-| **State** | `active`, `active_driver_ids`, `pending_trips` (each with its awakeable token), `epoch_id`, `loop_running` |
-| **Calls** | `call()` → `Locations.get_position` (per active driver at epoch close) &nbsp;·&nbsp; `ctx.resolve_awakeable` per matched trip — Dispatch's only outbound communication &nbsp;·&nbsp; self-`send()` → `close_epoch` in 5s |
-
-### RegionSafetyAgent — AI agent infrastructure
-
-Per-region safety monitor. Every 10s, reads its region's features,
-computes a composite risk via the mocked LLM, and decides whether to
-halt dispatch. On halt: `send()`s `Dispatch.set_active(false)`, creates
-an awakeable, suspends. A human resolves the awakeable with `approve`
-(region resumes, `Dispatch.set_active(true)`) or `deny` (stays halted;
-ticks continue but no re-escalation until something resumes the region).
-Trips in the halted region queue in Dispatch's `pending_trips` and drain
-on resume. One agent per region — SF can be halted while NYC, LA, SEA
-keep matching.
-
-| | |
-|---|---|
-| **Domain** | AI agent infrastructure |
-| **Shape** | Virtual Object keyed by `region` |
-| **Receives** | `send()`: `start_monitoring` (from MappingSim on bootstrap), `force_resume` (manual override) &nbsp;·&nbsp; self-scheduled: `tick` every 10s &nbsp;·&nbsp; external awakeable resolve from human operator &nbsp;·&nbsp; shared read: `get` |
-| **State** | `active`, `region_active`, `ticks`, `halts`, `last_score`, `last_rationale`, `last_verdict`, `pending_awakeable` |
-| **Calls** | `call()` → `Features.get` (region `weather`, `accident_density`) &nbsp;·&nbsp; `ctx.run_typed` for the composite risk score (journaled, deterministic on replay) &nbsp;·&nbsp; `send()` → `Dispatch.set_active(false)` to halt, `Dispatch.set_active(true)` on approve &nbsp;·&nbsp; `ctx.awakeable()` to suspend on a human verdict &nbsp;·&nbsp; self-`send()` → `tick` in 10s |
-
-The AI-agent showcase: per-key state, mocked LLM via `ctx.run`, awakeable
-for human-in-the-loop gating, all on Restate's durable runtime. Same
-primitives the other seven services use, applied to LLM-driven decisions.
-
-## Sim services
-
-Even the load generators are built on Restate. `RiderSim`, `DriverSim`,
-and `MappingSim` are Virtual Objects with their own durable cadence
-loops, paused and tuned via the same `call()` / `send()` primitives the
-app uses. `SimControl` is a fan-out controller — one call to
-`start_all` boots the whole fleet; one call to `stop_all` pauses it.
-
-This sharpens the pitch: there's no "and we also have a Python load
-generator on the side." The sims look like external clients from the
-app's perspective (each `RiderSim.tick` calls `Trip.request_ride` like
-any other caller), but they're durable Restate services themselves —
-state survives restarts, cadence loops survive worker churn, every emit
-journals through the same log.
-
-### RiderSim — load generator (Stateful microservice + Durable execution)
-
-Each rider VO owns its own rate and trip counter. `tick` picks a random
-region, fires `Trip.request_ride` + `Trip.confirm`, and self-sends the
-next `tick` with a Poisson-jittered delay.
-
-| | |
-|---|---|
-| **Domain** | Stateful microservices + Durable execution |
-| **Shape** | Virtual Object keyed by `rider_id` |
-| **Receives** | `call()`: `start`, `pause`, `resume`, `set_rate` &nbsp;·&nbsp; self-scheduled: `tick` (Poisson-jittered) &nbsp;·&nbsp; shared read: `get` |
-| **State** | `active`, `rate`, `trips_started`, `last_trip_id`, `last_region` |
-| **Calls** | `call()` → `Trip.request_ride` &nbsp;·&nbsp; `send()` → `Trip.confirm` &nbsp;·&nbsp; `ctx.run_typed` for jittered origin/destination/region/delay (journaled) &nbsp;·&nbsp; self-`send()` → `tick` |
-
-### DriverSim — load generator (Stateful microservice + Durable execution)
-
-Each driver VO owns its position and ping cadence. On first start it
-registers as IDLE with `Locations` and bumps regional supply. The
-`tick` loop drifts the position and sends a `ping`.
-
-| | |
-|---|---|
-| **Domain** | Event-driven apps + Durable execution |
-| **Shape** | Virtual Object keyed by `driver_id` |
-| **Receives** | `call()`: `start`, `pause`, `resume` &nbsp;·&nbsp; self-scheduled: `tick` every `ping_interval_s` &nbsp;·&nbsp; shared read: `get` |
-| **State** | `active`, `region`, `lat`, `lng`, `ping_interval_s`, `pings_sent` |
-| **Calls** | `call()` → `Locations.set_status(idle)` on first start &nbsp;·&nbsp; `send()` → `Locations.ping`, `Pricing.note_supply` &nbsp;·&nbsp; self-`send()` → `tick` |
-
-### MappingSim — load generator (Event-driven app + Durable execution)
-
-Per-region weather + accident feed. On first start it bootstraps that
-region's `Pricing.refresh` and `RegionSafetyAgent.start_monitoring`
-loops, then ticks on its own interval to emit fresh feature values.
-
-| | |
-|---|---|
-| **Domain** | Event-driven apps + Durable execution |
-| **Shape** | Virtual Object keyed by `region` |
-| **Receives** | `call()`: `start`, `pause`, `resume`, `set_interval` &nbsp;·&nbsp; self-scheduled: `tick` every `interval_s` &nbsp;·&nbsp; shared read: `get` |
-| **State** | `active`, `interval_s`, `emits`, `last_weather`, `last_accidents` |
-| **Calls** | `send()` → `Features.set` (weather + accident_density), `Pricing.refresh` (bootstrap), `RegionSafetyAgent.start_monitoring` (bootstrap) &nbsp;·&nbsp; `ctx.run_typed` for the random pick (journaled) &nbsp;·&nbsp; self-`send()` → `tick` |
-
-### SimControl — fleet controller
-
-Single-key fan-out service. `start_all` boots the whole fleet from one
-call; `stop_all` pauses everything; `set_rider_rate` retunes every
-rider VO at once. Operators (TUI, scripts, curl) drive sims through one
-small surface instead of enumerating per-key VOs.
-
-| | |
-|---|---|
-| **Domain** | Stateful microservices (control plane) |
-| **Shape** | Virtual Object keyed by `"global"` (single instance) |
-| **Receives** | `call()`: `start_all`, `stop_all`, `pause_riders`/`drivers`/`mapping`, `resume_*`, `set_rider_rate` &nbsp;·&nbsp; shared read: `get` |
-| **State** | `drivers`, `riders`, `rider_rate`, `mapping_interval_s` |
-| **Calls** | `send()` → fan-out to all `RiderSim`, `DriverSim`, `MappingSim` VOs |
 
 ## Why no Kafka
 
@@ -480,6 +264,238 @@ Press `d` for the walkthrough and follow that, then experiment:
 - Spike NYC (Tab to Regions, arrow to NYC, press `s`) while SF is already halted. Two regions queued; one verdict per region to drain.
 - Press `p` to poison a region's weather feature. The `Features.set` invocation for that key gets stuck retrying; subsequent set() calls for the same key queue up behind it. Every other Features key keeps working. Edit `rideco/services/features.py` (set `HANDLE_POISON_GRACEFULLY = True`), press `k` then `b` on the features service, and watch the stuck invocation drain.
 - Press `]` a few times to push the rider rate up. Watch surge multiplier respond within a Pricing.refresh tick (10s) as the windowed request rate climbs.
+
+## Per-service breakdown
+
+How each service is shaped, what it owns, what it calls. Every row in
+every "Calls" cell goes through Restate — `call()` is sync (caller
+awaits), `send()` is async fire-and-forget into the Restate log,
+self-`send()` with a delay replaces external schedulers.
+
+### Trip — Stateful microservice
+
+Per-trip lifecycle state machine. `confirm` is a long-running operation:
+creates an awakeable, sends one-way to `Dispatch.enqueue_trip` carrying
+the awakeable name, and **suspends** on the awakeable. When Dispatch's
+next matching round resolves the awakeable with a `driver_id`, the same
+`confirm` invocation resumes, records the assignment, and fans out to
+Locations. After assignment, schedules a delayed self-send to `complete`
+that flips the driver back to idle when the simulated ride ends. Trip →
+Dispatch is a one-way dependency; Dispatch never imports Trip.
+
+| | |
+|---|---|
+| **Domain** | Stateful microservices + Durable execution |
+| **Shape** | Virtual Object keyed by `trip_id` |
+| **Receives** | `call()`: `request_ride`, `confirm`, `cancel`, `complete` &nbsp;·&nbsp; shared read: `get` |
+| **State** | `rider_id`, `origin`, `destination`, `region`, `status`, `offer`, `multiplier`, `assigned_driver_id`, `epoch_id`, `pending_match_awakeable` |
+| **Calls** | `call()` → `Offers.generate` &nbsp;·&nbsp; `send()` → `Pricing.note_demand`, `Features.record_event` (one event per request into the rolling-window aggregate), `Dispatch.enqueue_trip` (with awakeable token), `Locations.accept_trip` &nbsp;·&nbsp; self-`send()` → `complete` (delayed) |
+
+### Offers — Stateful microservice
+
+Pure synthesis layer. Fans into ETA + Pricing in sequence, builds three
+candidate offers per car class (Standard, XL, Lux), selects Standard.
+
+| | |
+|---|---|
+| **Domain** | Stateful microservices |
+| **Shape** | Plain service (no per-key state) |
+| **Receives** | `call()` from Trip: `generate` |
+| **State** | — |
+| **Calls** | `call()` → `ETA.estimate`, `Pricing.quote` |
+
+### ETA — Stateful microservice
+
+Arrival-time predictor. Computes haversine distance, adjusts by region
+features, returns ETA + reliability score.
+
+| | |
+|---|---|
+| **Domain** | Stateful microservices |
+| **Shape** | Plain service (no per-key state) |
+| **Receives** | `call()` from Offers: `estimate` |
+| **State** | — |
+| **Calls** | `call()` → `Features.get` (region `weather`, `accident_density`) |
+
+### Pricing — Stateful microservice
+
+Per-region surge multiplier. The refresh loop is a delayed call to self
+— no external scheduler. Multiplier reflects weather + accidents + a
+**rolling 60s ride-request rate** read from the Features aggregate
+(below). The cumulative `demand_count` only grows; the windowed rate
+decays naturally, so surge responds to *recent* demand intensity.
+
+| | |
+|---|---|
+| **Domain** | Stateful microservices + Durable execution |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `call()` from Offers: `quote` &nbsp;·&nbsp; `send()`: `note_demand` (Trip), `note_supply` (DriverSim) &nbsp;·&nbsp; self-scheduled: `refresh` |
+| **State** | `multiplier`, `supply_count`, `demand_count`, `last_refresh_ms` |
+| **Calls** | `call()` → `Features.get` (weather, accidents), `Features.event_rate` (windowed request rate) &nbsp;·&nbsp; self-`send()` → `refresh` in 10s |
+
+### Locations — Event-driven app + Serving
+
+Per-driver position + status. Pings are fire-and-forget; the smoothing
+(mocked here as an exponential moving average; production systems would
+use a Marginalized Particle Filter) happens inside the handler. Position
+reads via the shared `get_position` handler are the serving path.
+
+| | |
+|---|---|
+| **Domain** | Event-driven apps + Serving |
+| **Shape** | Virtual Object keyed by `driver_id` |
+| **Receives** | `send()`: `ping` (driver app), `accept_trip` (Trip) &nbsp;·&nbsp; `call()`: `set_status` &nbsp;·&nbsp; shared read: `get_position` |
+| **State** | `status`, `matched_lat`, `matched_lng`, `last_ping_ms`, `region`, `current_trip_id` |
+| **Calls** | `send()` → `Dispatch.register_driver` / `deregister_driver` on status transitions |
+
+### Features — Event-driven app + Serving + stream-processed aggregates
+
+Online feature store with **two shapes on the same Virtual Object**:
+
+- **Point-value features** (`set` / `get`) — last-write-wins. Used for
+  `region:SF:weather`, `region:SF:accident_density`. External providers
+  (Mapping in production, MappingSim here) `send()` writes; readers
+  (ETA, Pricing, RegionSafetyAgent) `call()` `get`.
+- **Aggregates over event streams** (`record_event` / `event_rate`) —
+  rolling 60s window per key. Trip.request_ride fire-and-forget sends
+  one event per ride request to `events:region:SF:ride_request`. The
+  handler appends `now` to a per-key timestamp list and trims out
+  samples older than the window. Pricing.refresh `call()`s the shared
+  `event_rate` handler every 10s to read events/sec over the window
+  and fold it into the surge multiplier.
+
+The canonical "events in → windowed aggregate out → consumer service
+decision" stream-processing pattern, hosted on the same VO that serves
+the point-value features. Per-key state slots are independent (`value`
+vs `samples`), and per-key exclusive handlers give each event stream a
+single-writer queue without any explicit locking. Shared `event_rate`
+readers don't block writers.
+
+Per-key serialization also means a stuck handler on one key (the
+poison-pill demo) blocks only that key while every other Features VO
+keeps working — fault isolation at the key level.
+
+| | |
+|---|---|
+| **Domain** | Event-driven apps + Serving + stream-processed aggregates |
+| **Shape** | Virtual Object keyed by `{entity_type}:{entity_id}:{feature_name}` or `events:{...}` |
+| **Receives** | `send()`: `set` (point value), `record_event` (stream sample) &nbsp;·&nbsp; shared reads: `get`, `event_rate` |
+| **State** | per-key: either `{value, version, last_updated_ms}` OR `{samples}` (list of ms timestamps in the rolling window) |
+| **Calls** | — |
+
+### Dispatch — Durable execution
+
+Long-running matcher. Each epoch: snapshot pending trips + driver
+positions, greedy nearest-driver match, resolve each matched trip's
+awakeable token with its `driver_id`. Unmatched trips carry forward.
+Dispatch has no knowledge of Trip's state machine — it just resolves
+tokens it was handed. When RegionSafetyAgent halts the region, the
+epoch loop keeps ticking but matching is skipped; trips queue and drain
+on resume.
+
+| | |
+|---|---|
+| **Domain** | Durable execution |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `send()`: `enqueue_trip` (Trip, with awakeable token), `register_driver` / `deregister_driver` (Locations), `set_active` (RegionSafetyAgent) &nbsp;·&nbsp; self-scheduled: `close_epoch` every 5s |
+| **State** | `active`, `active_driver_ids`, `pending_trips` (each with its awakeable token), `epoch_id`, `loop_running` |
+| **Calls** | `call()` → `Locations.get_position` (per active driver at epoch close) &nbsp;·&nbsp; `ctx.resolve_awakeable` per matched trip — Dispatch's only outbound communication &nbsp;·&nbsp; self-`send()` → `close_epoch` in 5s |
+
+### RegionSafetyAgent — AI agent infrastructure
+
+Per-region safety monitor. Every 10s, reads its region's features,
+computes a composite risk via the mocked LLM, and decides whether to
+halt dispatch. On halt: `send()`s `Dispatch.set_active(false)`, creates
+an awakeable, suspends. A human resolves the awakeable with `approve`
+(region resumes, `Dispatch.set_active(true)`) or `deny` (stays halted;
+ticks continue but no re-escalation until something resumes the region).
+Trips in the halted region queue in Dispatch's `pending_trips` and drain
+on resume. One agent per region — SF can be halted while NYC, LA, SEA
+keep matching.
+
+| | |
+|---|---|
+| **Domain** | AI agent infrastructure |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `send()`: `start_monitoring` (from MappingSim on bootstrap), `force_resume` (manual override) &nbsp;·&nbsp; self-scheduled: `tick` every 10s &nbsp;·&nbsp; external awakeable resolve from human operator &nbsp;·&nbsp; shared read: `get` |
+| **State** | `active`, `region_active`, `ticks`, `halts`, `last_score`, `last_rationale`, `last_verdict`, `pending_awakeable` |
+| **Calls** | `call()` → `Features.get` (region `weather`, `accident_density`) &nbsp;·&nbsp; `ctx.run_typed` for the composite risk score (journaled, deterministic on replay) &nbsp;·&nbsp; `send()` → `Dispatch.set_active(false)` to halt, `Dispatch.set_active(true)` on approve &nbsp;·&nbsp; `ctx.awakeable()` to suspend on a human verdict &nbsp;·&nbsp; self-`send()` → `tick` in 10s |
+
+The AI-agent showcase: per-key state, mocked LLM via `ctx.run`, awakeable
+for human-in-the-loop gating, all on Restate's durable runtime. Same
+primitives the other seven services use, applied to LLM-driven decisions.
+
+## Sim services
+
+Even the load generators are built on Restate. `RiderSim`, `DriverSim`,
+and `MappingSim` are Virtual Objects with their own durable cadence
+loops, paused and tuned via the same `call()` / `send()` primitives the
+app uses. `SimControl` is a fan-out controller — one call to
+`start_all` boots the whole fleet; one call to `stop_all` pauses it.
+
+This sharpens the pitch: there's no "and we also have a Python load
+generator on the side." The sims look like external clients from the
+app's perspective (each `RiderSim.tick` calls `Trip.request_ride` like
+any other caller), but they're durable Restate services themselves —
+state survives restarts, cadence loops survive service churn, every emit
+journals through the same log.
+
+### RiderSim — load generator (Stateful microservice + Durable execution)
+
+Each rider VO owns its own rate and trip counter. `tick` picks a random
+region, fires `Trip.request_ride` + `Trip.confirm`, and self-sends the
+next `tick` with a Poisson-jittered delay.
+
+| | |
+|---|---|
+| **Domain** | Stateful microservices + Durable execution |
+| **Shape** | Virtual Object keyed by `rider_id` |
+| **Receives** | `call()`: `start`, `pause`, `resume`, `set_rate` &nbsp;·&nbsp; self-scheduled: `tick` (Poisson-jittered) &nbsp;·&nbsp; shared read: `get` |
+| **State** | `active`, `rate`, `trips_started`, `last_trip_id`, `last_region` |
+| **Calls** | `call()` → `Trip.request_ride` &nbsp;·&nbsp; `send()` → `Trip.confirm` &nbsp;·&nbsp; `ctx.run_typed` for jittered origin/destination/region/delay (journaled) &nbsp;·&nbsp; self-`send()` → `tick` |
+
+### DriverSim — load generator (Stateful microservice + Durable execution)
+
+Each driver VO owns its position and ping cadence. On first start it
+registers as IDLE with `Locations` and bumps regional supply. The
+`tick` loop drifts the position and sends a `ping`.
+
+| | |
+|---|---|
+| **Domain** | Event-driven apps + Durable execution |
+| **Shape** | Virtual Object keyed by `driver_id` |
+| **Receives** | `call()`: `start`, `pause`, `resume` &nbsp;·&nbsp; self-scheduled: `tick` every `ping_interval_s` &nbsp;·&nbsp; shared read: `get` |
+| **State** | `active`, `region`, `lat`, `lng`, `ping_interval_s`, `pings_sent` |
+| **Calls** | `call()` → `Locations.set_status(idle)` on first start &nbsp;·&nbsp; `send()` → `Locations.ping`, `Pricing.note_supply` &nbsp;·&nbsp; self-`send()` → `tick` |
+
+### MappingSim — load generator (Event-driven app + Durable execution)
+
+Per-region weather + accident feed. On first start it bootstraps that
+region's `Pricing.refresh` and `RegionSafetyAgent.start_monitoring`
+loops, then ticks on its own interval to emit fresh feature values.
+
+| | |
+|---|---|
+| **Domain** | Event-driven apps + Durable execution |
+| **Shape** | Virtual Object keyed by `region` |
+| **Receives** | `call()`: `start`, `pause`, `resume`, `set_interval` &nbsp;·&nbsp; self-scheduled: `tick` every `interval_s` &nbsp;·&nbsp; shared read: `get` |
+| **State** | `active`, `interval_s`, `emits`, `last_weather`, `last_accidents` |
+| **Calls** | `send()` → `Features.set` (weather + accident_density), `Pricing.refresh` (bootstrap), `RegionSafetyAgent.start_monitoring` (bootstrap) &nbsp;·&nbsp; `ctx.run_typed` for the random pick (journaled) &nbsp;·&nbsp; self-`send()` → `tick` |
+
+### SimControl — fleet controller
+
+Single-key fan-out service. `start_all` boots the whole fleet from one
+call; `stop_all` pauses everything; `set_rider_rate` retunes every
+rider VO at once. Operators (TUI, scripts, curl) drive sims through one
+small surface instead of enumerating per-key VOs.
+
+| | |
+|---|---|
+| **Domain** | Stateful microservices (control plane) |
+| **Shape** | Virtual Object keyed by `"global"` (single instance) |
+| **Receives** | `call()`: `start_all`, `stop_all`, `pause_riders`/`drivers`/`mapping`, `resume_*`, `set_rider_rate` &nbsp;·&nbsp; shared read: `get` |
+| **State** | `drivers`, `riders`, `rider_rate`, `mapping_interval_s` |
+| **Calls** | `send()` → fan-out to all `RiderSim`, `DriverSim`, `MappingSim` VOs |
 
 ## Low-level scripts (appendix)
 
