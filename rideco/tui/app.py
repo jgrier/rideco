@@ -461,9 +461,10 @@ DEMO_STEPS: list[DemoStep] = [
             "and resuming when a human approves. All on three primitives: "
             "call(), send(), and awakeable."
         ),
-        action="Press [yellow]n[/yellow] to advance, [yellow]N[/yellow] to go back, [yellow]d[/yellow] to exit demo.",
+        action="Press [yellow]n[/yellow] to advance, [yellow]N[/yellow] to go back, [yellow]d[/yellow] to exit demo. Press [yellow]o[/yellow] any time to jump to the Restate UI page this step references.",
         watch="The four regions in the Regions table — SF / NYC / LA / SEA — should all show 'active' with low risk (green).",
-        restate=f"Open [cyan]{RESTATE_UI}[/cyan] in a browser. We'll keep coming back to it.",
+        restate=f"Press [yellow]o[/yellow] to open the [bold]Overview[/bold] page ([cyan]{RESTATE_UI}/ui/overview[/cyan]) — list of all twelve registered services. We'll keep coming back to the UI as we go.",
+        restate_url=f"{RESTATE_UI}/ui/overview",
     ),
     DemoStep(
         title="Phase 1 · The system is alive",
@@ -477,9 +478,10 @@ DEMO_STEPS: list[DemoStep] = [
             "primitives the app uses, same ingress; they just play external "
             "roles."
         ),
-        action="No action — just observe for ~30s.",
+        action="Press [yellow]o[/yellow] to open the [bold]Invocations[/bold] page, then observe for ~30s.",
         watch="Regions table: 'Done' climbs in all four regions; 'In-flight' hovers around the matching cadence; 'Risk' stays green.",
-        restate=f"In the Restate UI ([cyan]{RESTATE_UI}[/cyan]) open the [bold]Invocations[/bold] view. You'll see lots of activity: Trip / Offers / Pricing / Dispatch invocations completing, plus durable scheduled ones for the cadence loops (next step).",
+        restate=f"[cyan]{RESTATE_UI}/ui/invocations[/cyan] — lots of activity: Trip / Offers / Pricing / Dispatch invocations completing, plus durable [bold]scheduled[/bold] ones for the cadence loops (next step).",
+        restate_url=f"{RESTATE_UI}/ui/invocations",
     ),
     DemoStep(
         title="The cadence loops",
@@ -493,14 +495,13 @@ DEMO_STEPS: list[DemoStep] = [
             "send_delay=...). The next firing is durable on the Restate "
             "log — if the host crashes, the send still fires."
         ),
-        action="In the Services table, arrow down to [yellow]dispatch[/yellow] (or [yellow]region_safety_agent[/yellow]) to tail its log.",
+        action="Press [yellow]o[/yellow] to open the [bold]Invocations[/bold] page. Then in the TUI's Services table, arrow down to [yellow]dispatch[/yellow] (or [yellow]region_safety_agent[/yellow]) to tail its log.",
         watch=(
-            "In the bottom-pane log tail you'll see lines like "
-            "[blue]→ send+delay(5s) Dispatch.close_epoch[/blue] and "
-            "[blue]→ send+delay(10s) RegionSafetyAgent.tick[/blue]. "
-            "Press [yellow]Tab[/yellow] to flip back to the Regions table when ready."
+            "Left pane shows lines like [blue]→ send+delay(5s) Dispatch.close_epoch[/blue] and "
+            "[blue]→ send+delay(10s) RegionSafetyAgent.tick[/blue]."
         ),
-        restate=f"In the Restate UI Invocations view, filter by service = [bold]Dispatch[/bold] or [bold]RegionSafetyAgent[/bold] — you'll see the scheduled future invocations queued (not yet executed).",
+        restate=f"Filter Invocations by [bold]Status: scheduled[/bold] or [bold]Service: Dispatch[/bold] / [bold]RegionSafetyAgent[/bold] — you'll see future invocations queued (not yet executed).",
+        restate_url=f"{RESTATE_UI}/ui/invocations",
     ),
     DemoStep(
         title="Phase 2 · Spike SF unsafe",
@@ -512,9 +513,10 @@ DEMO_STEPS: list[DemoStep] = [
             "and weather=rain_heavy continuously for 25s — the agent will "
             "see it on its next tick (within 10s)."
         ),
-        action="Make sure SF is selected in the Regions table (arrow up to the SF row), then press [yellow]s[/yellow] to spike.",
-        watch="A 'spiking SF (25s sustained)…' notification appears at the top. The bottom pane (in region-detail mode for SF) shows risk climbing as the agent ticks.",
-        restate="In the Restate UI Invocations view, watch for [bold]RegionSafetyAgent.tick[/bold] firings on key=SF — each scores higher as the spike lands.",
+        action="Make sure SF is selected in the Regions table (arrow up to the SF row), then press [yellow]s[/yellow] to spike. Press [yellow]o[/yellow] to watch the agent's state in the UI.",
+        watch="A 'spiking SF (25s sustained)…' notification appears at the top. The Regions table's risk column climbs as the agent ticks.",
+        restate=f"[cyan]{RESTATE_UI}/ui/state/RegionSafetyAgent[/cyan] — drill into the SF key to watch last_score climb, then halts=1 + pending_awakeable populate as the next step unfolds.",
+        restate_url=f"{RESTATE_UI}/ui/state/RegionSafetyAgent",
     ),
     DemoStep(
         title="The halt",
@@ -529,9 +531,10 @@ DEMO_STEPS: list[DemoStep] = [
             "queue up but stay durably enqueued; the other three regions "
             "keep matching."
         ),
-        action="Wait ~10s for the next agent tick. Stay on SF in the Regions table to watch.",
+        action="Wait ~10s for the next agent tick. Stay on SF in the Regions table to watch. Press [yellow]o[/yellow] to inspect the suspended invocation.",
         watch="SF row goes [red]HALTED[/red]; the Halts column ticks up; the Awakeable column shows a [cyan]sign_…[/cyan] id; pending trips grow. NYC/LA/SEA keep working.",
-        restate=f"In the Restate UI ([cyan]{RESTATE_UI}[/cyan]) → Invocations: find the [bold]RegionSafetyAgent[/bold] key=SF invocation in [bold]Suspended[/bold] state. Click into State → see region_active=false, halts=1, pending_awakeable=sign_…. That's the same id you see in the TUI.",
+        restate=f"On the [bold]Invocations[/bold] page filter by Status = [bold]suspended[/bold] — find the RegionSafetyAgent.tick on key=SF. Click in to see the awakeable it's waiting on. That id is the same one shown in the TUI's Awakeable column.",
+        restate_url=f"{RESTATE_UI}/ui/invocations",
     ),
     DemoStep(
         title="Phase 3 · Human approves resume",
@@ -541,9 +544,10 @@ DEMO_STEPS: list[DemoStep] = [
             "which then sends Dispatch.set_active(true). On the next "
             "Dispatch.close_epoch (≤5s) the backlog drains."
         ),
-        action="With SF still selected, press [yellow]a[/yellow] to approve.",
-        watch="Bottom pane shows 'approved SF — agent resuming'. Within ~5s SF flips back to [green]active[/green], 'pending' falls toward 0, 'in-flight' and 'done' climb again.",
-        restate="Back in Invocations, the previously-suspended RegionSafetyAgent invocation transitions to Completed. The next RegionSafetyAgent.tick on SF resumes the normal scoring cycle (still ticking every 10s).",
+        action="With SF still selected, press [yellow]a[/yellow] to approve. Press [yellow]o[/yellow] to watch the state flip back.",
+        watch="Notification: 'approved SF — agent resuming'. Within ~5s SF flips back to [green]active[/green], 'pending' falls toward 0, 'in-flight' and 'done' climb again.",
+        restate=f"[cyan]{RESTATE_UI}/ui/state/RegionSafetyAgent[/cyan] — refresh SF: region_active goes true, pending_awakeable clears, last_verdict=approve. On Invocations, the previously-suspended tick transitions to Completed and a fresh scheduled tick takes its place.",
+        restate_url=f"{RESTATE_UI}/ui/state/RegionSafetyAgent",
     ),
     DemoStep(
         title="Stream processing — windowed demand",
@@ -558,9 +562,10 @@ DEMO_STEPS: list[DemoStep] = [
             "point-value features (set/get) AND aggregates over event "
             "streams (record_event/event_rate)."
         ),
-        action="Arrow down to [yellow]pricing[/yellow] in the Services table to tail its log.",
+        action="Arrow down to [yellow]pricing[/yellow] in the Services table to tail its log. Press [yellow]o[/yellow] to inspect the rolling-window state in the UI.",
         watch="Each refresh line shows [dim]request_rate_per_s=X.XXX[/dim] — that's the windowed signal. Spike the rider rate with [yellow]][/yellow] to push it higher; surge multiplier responds within a refresh tick.",
-        restate=f"In Restate UI → Services → [bold]Features[/bold] → State, browse keys starting with [cyan]events:region:[/cyan]. Their 'samples' is the rolling timestamp list — the durable backing of the windowed aggregate.",
+        restate=f"[cyan]{RESTATE_UI}/ui/state/Features[/cyan] — browse keys starting with [cyan]events:region:[/cyan]. Their 'samples' field is the rolling timestamp list — the durable backing of the windowed aggregate. Region-flavored keys like region:SF:weather hold point-values on the same VO.",
+        restate_url=f"{RESTATE_UI}/ui/state/Features",
     ),
     DemoStep(
         title="Now try the rest",
@@ -571,13 +576,14 @@ DEMO_STEPS: list[DemoStep] = [
             "  · [yellow]t[/yellow] open the trip-detail modal — drill into any trip\n"
             "  · [yellow]p[/yellow] poison a region's weather feature — per-key fault isolation\n"
             "  · [yellow]k[/yellow] / [yellow]b[/yellow] kill / boot a service — Restate keeps invocations durable across the gap\n"
-            "  · [yellow][/yellow] / [yellow]][/yellow] tune the rider rate · [yellow]shift+p[/yellow] pause sims\n"
+            "  · [yellow][[/yellow] / [yellow]][/yellow] tune the rider rate · [yellow]shift+p[/yellow] pause sims\n"
             "  · [yellow]ctrl+r[/yellow] full reset — wipe state, reboot everything\n\n"
             "Press [yellow]d[/yellow] to exit demo mode. The whole demo loop runs on the same three primitives — call(), send(), awakeable — plus delayed self-sends for cadence. No Kafka, no Redis, no workflow engine, no agent framework."
         ),
-        action="Press [yellow]d[/yellow] to exit demo mode and explore freely.",
+        action="Press [yellow]d[/yellow] to exit demo mode and explore freely. [yellow]o[/yellow] still works to open the Restate UI any time.",
         watch="Anything you want.",
-        restate=f"Keep [cyan]{RESTATE_UI}[/cyan] open on a second monitor — watching invocations land while you trigger TUI actions is the best way to internalize the model.",
+        restate=f"Keep [cyan]{RESTATE_UI}/ui/overview[/cyan] open on a second monitor — watching invocations land in real time while you trigger TUI actions is the best way to internalize the model.",
+        restate_url=f"{RESTATE_UI}/ui/overview",
     ),
 ]
 
