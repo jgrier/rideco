@@ -197,6 +197,12 @@ class RegionsTable(DataTable):
         for region in all_regions():
             self.add_row(region, "", "", "", "", "", "", "", "", "", key=region)
 
+    def on_focus(self) -> None:
+        # Tab moves focus here without moving the cursor, so RowHighlighted
+        # doesn't re-fire — but we still want the bottom pane to update to
+        # reflect whatever row is currently under the cursor.
+        self.app.on_regions_focused()
+
     def apply(self, region: str, snap: dict) -> None:
         c = _build_region_cells(snap)
         self.update_cell(region, "active", c.active)
@@ -229,6 +235,11 @@ class ServicesTable(DataTable):
             self.add_column(label, key=key, width=width)
         for name, port in SERVICES:
             self.add_row(name, str(port), "", "", "", key=name)
+
+    def on_focus(self) -> None:
+        # Tab moves focus here without moving the cursor, so the
+        # log/narrative panes need to be nudged manually.
+        self.app.on_services_focused()
 
     # Width budgets used by `apply` to compute available cell width for
     # the last_log column at render time. Adapts to terminal resize on
@@ -1275,6 +1286,37 @@ class RidecoApp(App):
             self.query_one(BottomPane).show_region(region, snap)
         except Exception:
             pass
+
+    def on_regions_focused(self) -> None:
+        """RegionsTable just got focus. If there's already a selected
+        region (set by the auto-RowHighlighted on mount, or by previous
+        cursor movement), flip the left pane to its detail view — Tab
+        alone doesn't move the cursor, so RowHighlighted doesn't fire."""
+        if not self._selected_region:
+            return
+        self._mode = MODE_REGION
+        asyncio.create_task(self._paint_region_now(self._selected_region))
+
+    def on_services_focused(self) -> None:
+        """ServicesTable just got focus. Mirror of the above — flip the
+        left pane to the log tail of the currently-selected service, and
+        the right pane to its narrative (unless demo is active)."""
+        name = self._selected_service
+        if not name:
+            return
+        svc = self.pm.services.get(name)
+        if svc is None:
+            return
+        self._mode = MODE_LOG
+        try:
+            self.query_one(BottomPane).show_log(svc)
+        except Exception:
+            pass
+        if self._demo_step is None:
+            try:
+                self.query_one(RightPane).show_narrative(name)
+            except Exception:
+                pass
 
     # ───── actions ───────────────────────────────────────────────────
 
