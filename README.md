@@ -9,7 +9,7 @@ service). All state, durability, retries, ordering, and scheduling
 live inside Restate.
 
 The repo is a reproducible demo. One terminal, a single TUI command, no
-Kafka, no Redis, no separate workflow engine, no agent framework. Just
+Kafka, no Redis, no databases, no separate workflow engine, no agent framework. Just
 Restate plus stateless application code.
 
 ![Architecture](architecture.svg)
