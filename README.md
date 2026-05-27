@@ -162,6 +162,8 @@ Then it sits there and shows:
 Press `q` to quit; the TUI tears down sims, hypercorns, and the Restate
 container in order.
 
+![TUI screenshot](tui.svg)
+
 ### Guided walkthrough
 
 Press `d` to enter demo mode. Eight steps, mirroring the central
