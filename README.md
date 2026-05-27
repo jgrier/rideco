@@ -26,7 +26,7 @@ through Restate, which routes it onward. Restate is always the hub.
 
 This only works because Restate built its own distributed log
 specifically so durability can sit in the synchronous call path of every
-service-to-service hop. A normal log adds milliseconds you can't afford
+service-to-service hop. A normal log adds significant latency you can't afford
 on each call; you'd never put one in the middle of a request/response
 chain. Restate's log is purpose-built and fast enough to be in the
 middle of every interaction without being a bottleneck.
