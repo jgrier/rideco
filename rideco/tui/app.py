@@ -805,29 +805,31 @@ class RightPane(Static):
     """
 
     DEFAULT = (
-        "[bold]Side pane[/bold]\n\n"
         "[dim]Press[/dim] [yellow]d[/yellow] [dim]for the guided demo walkthrough.[/dim]\n"
         "[dim]Or select a service in the Services table to see what it does.[/dim]"
     )
 
     def on_mount(self) -> None:
+        self.border_title = "side"
         self.update(self.DEFAULT)
 
     def show_default(self) -> None:
+        self.border_title = "side"
         self.update(self.DEFAULT)
 
     def show_narrative(self, svc_name: str) -> None:
+        self.border_title = f"narrative · {svc_name}"
         body = SERVICE_NARRATIVES.get(svc_name)
         if body is None:
-            self.update(f"[bold cyan]{svc_name}[/bold cyan]\n\n[dim]No description.[/dim]")
+            self.update("[dim]No description.[/dim]")
             return
-        self.update(f"[bold cyan]{svc_name}[/bold cyan]\n\n{body}")
+        self.update(body)
 
     def show_demo(self, idx: int, step: "DemoStep") -> None:
+        self.border_title = f"demo · step {idx + 1}/{len(DEMO_STEPS)}"
         header = (
-            f"[bold cyan]Demo · Step {idx + 1} of {len(DEMO_STEPS)}[/bold cyan]"
-            f"   [dim]([yellow]n[/yellow] next · [yellow]N[/yellow] back "
-            f"· [yellow]d[/yellow] exit)[/dim]"
+            f"[dim]([yellow]n[/yellow] next · [yellow]N[/yellow] back "
+            f"· [yellow]o[/yellow] open Restate UI · [yellow]d[/yellow] exit)[/dim]"
         )
         title = f"[bold]{step.title}[/bold]"
         body = step.body
@@ -844,18 +846,22 @@ class BottomPane(Static):
     a tailing log view of the currently-selected service."""
 
     def on_mount(self) -> None:
+        self.border_title = "help"
         self.update(HELP_TEXT)
 
     def show_help(self) -> None:
+        self.border_title = "help"
         self.update(HELP_TEXT)
 
     def show_boot(self, lines: list[str]) -> None:
+        self.border_title = "boot"
         body = "[bold]Booting RideCo...[/bold]\n\n" + "\n".join(
             f"  {line}" for line in lines
         )
         self.update(body)
 
     def show_teardown(self, lines: list[str]) -> None:
+        self.border_title = "teardown"
         body = "[bold]Tearing down...[/bold]\n\n" + "\n".join(
             f"  {line}" for line in lines
         )
@@ -872,6 +878,7 @@ class BottomPane(Static):
         rendering path for multi-line content, and a wrapped traceback
         was the original cause of UI hangs.
         """
+        self.border_title = f"logs · {svc.name}"
         header = Text.from_markup(
             f"[bold cyan]{svc.name}[/bold cyan]"
             f"   port=[yellow]{svc.port}[/yellow]"
@@ -894,6 +901,7 @@ class BottomPane(Static):
 
     def show_region(self, region: str, snap: dict) -> None:
         """Render a focused detail view for the highlighted region."""
+        self.border_title = f"region · {region}"
         a = snap.get("agent") or {}
         d = snap.get("dispatch") or {}
         active = a.get("region_active")
