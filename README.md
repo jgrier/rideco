@@ -29,9 +29,7 @@ specifically so durability can sit in the synchronous call path of every
 service-to-service hop. A normal log adds milliseconds you can't afford
 on each call; you'd never put one in the middle of a request/response
 chain. Restate's log is purpose-built and fast enough to be in the
-middle of every interaction without being a bottleneck. Think of it as
-a service mesh where the connecting tissue is durable — a **Durable
-Mesh**.
+middle of every interaction without being a bottleneck.
 
 **`call()` vs `send()`.** Every handler supports both — the choice is at
 the call site. `call()` is synchronous: the caller awaits the response.
